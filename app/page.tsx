@@ -6,7 +6,7 @@ type Task = { id: number; title: string; course: string; due: string; done: bool
 type GradeCategory = { name: string; weight: number; kind: 'exam' | 'task'; score: number | null };
 type Course = { name: string; grading: GradeCategory[] };
 type GradeRow = { id: number; name: string; weight: string; kind: 'exam' | 'task' };
-type WeeklyItem = { id: number; weekday: number; title: string; time: string; endTime?: string; kind: '课程' | '任务'; course?: string; color?: string };
+type WeeklyItem = { id: number; weekday: number; title: string; time: string; endTime?: string; kind: '课程' | '任务'; course?: string; location?: string; color?: string };
 type Forecast = { target: number; scores: Record<string, number> };
 type DataBundle = { format: 'deadline-tracker'; version: 1; savedAt: string; tasks: Task[]; courses: Course[]; weeklyCourses: WeeklyItem[]; weeklyAssignments: WeeklyItem[]; forecasts: Record<string, Forecast> };
 type LocalWritableFile = { write(data: string): Promise<void>; close(): Promise<void> };
@@ -52,6 +52,7 @@ function normalizeWeeklyItems(value: unknown) {
     const kind = item.kind === '课程' ? '课程' as const : '任务' as const;
     const title = typeof item.title === 'string' ? item.title : '未命名安排';
     const course = typeof item.course === 'string' ? item.course : undefined;
+    const location = typeof item.location === 'string' ? item.location : undefined;
     let color = typeof item.color === 'string' ? item.color : undefined;
     if (kind === '课程') {
       const colorKey = (course || title).toLocaleLowerCase();
@@ -66,6 +67,7 @@ function normalizeWeeklyItems(value: unknown) {
       endTime: typeof item.endTime === 'string' ? item.endTime : (kind === '课程' && item.time ? addMinutesToTime(item.time, 60) : undefined),
       kind,
       course,
+      location,
       color,
     };
   });
@@ -160,7 +162,7 @@ export default function Page() {
   const [editingCalendarItemId, setEditingCalendarItemId] = useState<number | null>(null);
   const [calendarExpanded, setCalendarExpanded] = useState(false);
   const [calendarError, setCalendarError] = useState('');
-  const [calendarDraft, setCalendarDraft] = useState<{ weekday: string; title: string; time: string; endTime: string; kind: '课程' | '任务'; course: string }>({ weekday: '1', title: '', time: '09:00', endTime: '10:00', kind: '课程', course: seedCourses[0]?.name ?? '' });
+  const [calendarDraft, setCalendarDraft] = useState<{ weekday: string; title: string; time: string; endTime: string; kind: '课程' | '任务'; course: string; location: string }>({ weekday: '1', title: '', time: '09:00', endTime: '10:00', kind: '课程', course: seedCourses[0]?.name ?? '', location: '' });
   const [weeklyCourses, setWeeklyCourses] = useState<WeeklyItem[]>([]);
   const [weeklyAssignments, setWeeklyAssignments] = useState<WeeklyItem[]>([]);
   const [forecasts, setForecasts] = useState<Record<string, Forecast>>({});
@@ -557,7 +559,7 @@ export default function Page() {
   function openCalendarForm(weekday: number) {
     const defaultCourse = courses.find((course) => course.name !== UNASSIGNED)?.name ?? '';
     setEditingCalendarItemId(null);
-    setCalendarDraft({ weekday: String(weekday), title: '', time: calendarMode === 'course' ? '09:00' : '', endTime: calendarMode === 'course' ? '10:00' : '', kind: calendarMode === 'course' ? '课程' : '任务', course: calendarMode === 'course' ? defaultCourse : '' });
+    setCalendarDraft({ weekday: String(weekday), title: '', time: calendarMode === 'course' ? '09:00' : '', endTime: calendarMode === 'course' ? '10:00' : '', kind: calendarMode === 'course' ? '课程' : '任务', course: calendarMode === 'course' ? defaultCourse : '', location: '' });
     setCalendarError('');
     setCalendarFormOpen(true);
   }
@@ -571,6 +573,7 @@ export default function Page() {
       endTime: item.endTime ?? (item.kind === '课程' && item.time ? addMinutesToTime(item.time, 60) : ''),
       kind: item.kind,
       course: item.course ?? '',
+      location: item.location ?? '',
     });
     setCalendarError('');
     setCalendarFormOpen(true);
@@ -607,6 +610,7 @@ export default function Page() {
       endTime: calendarMode === 'course' && calendarDraft.kind === '课程' ? calendarDraft.endTime : undefined,
       kind: calendarMode === 'course' ? calendarDraft.kind : '任务',
       course: course || undefined,
+      location: calendarMode === 'course' && calendarDraft.kind === '课程' ? calendarDraft.location.trim() || undefined : undefined,
       color: calendarMode === 'course' && calendarDraft.kind === '课程' ? groupedColor ?? originalColor ?? availableColor : undefined,
     };
     if (calendarMode === 'course') setWeeklyCourses(editingCalendarItemId === null ? [...weeklyCourses, item] : weeklyCourses.map((current) => current.id === editingCalendarItemId ? item : current));
@@ -693,7 +697,7 @@ export default function Page() {
         <div className="week-grid">{weekDays.map((day) => {
           const dayItems = calendarItems.filter((item) => item.weekday === day.value);
           const previewItems = calendarMode === 'course' ? dayItems.slice(0, 3) : dayItems;
-          return <section className={`week-day ${today === day.value ? 'today' : ''}`} key={day.value}><div className="week-day-head"><span>{day.label}</span>{today === day.value && <small>今天</small>}</div><div className="week-items">{previewItems.map((item) => <div className={`week-item ${calendarMode === 'course' && item.kind === '课程' ? 'course-preview-item' : ''}`} style={calendarMode === 'course' && item.color ? { '--course-color': item.color } as React.CSSProperties : undefined} key={item.id}><div className="week-item-actions"><button type="button" onClick={() => editCalendarItem(item)} aria-label={`编辑 ${item.title}`} title="编辑">✎</button><button type="button" onClick={() => deleteCalendarItem(item.id)} aria-label={`删除 ${item.title}`} title="删除">×</button></div>{item.time && <small>{calendarMode === 'course' && item.kind === '课程' ? `${formatClock(item.time)}–${formatClock(item.endTime ?? addMinutesToTime(item.time, 60))}` : item.time}</small>}<span>{item.title}</span>{calendarMode === 'course' && <em>{item.course || item.kind}</em>}</div>)}{calendarMode === 'course' && dayItems.length > previewItems.length && <button className="week-more" onClick={() => setCalendarExpanded(true)}>＋{dayItems.length - previewItems.length}</button>}</div><button className="week-add" onClick={() => openCalendarForm(day.value)}>＋</button></section>;
+          return <section className={`week-day ${today === day.value ? 'today' : ''}`} key={day.value}><div className="week-day-head"><span>{day.label}</span>{today === day.value && <small>今天</small>}</div><div className="week-items">{previewItems.map((item) => <div className={`week-item ${calendarMode === 'course' && item.kind === '课程' ? 'course-preview-item' : ''}`} style={calendarMode === 'course' && item.color ? { '--course-color': item.color } as React.CSSProperties : undefined} title={item.location ? `${item.title} · ${item.location}` : item.title} key={item.id}><div className="week-item-actions"><button type="button" onClick={() => editCalendarItem(item)} aria-label={`编辑 ${item.title}`} title="编辑">✎</button><button type="button" onClick={() => deleteCalendarItem(item.id)} aria-label={`删除 ${item.title}`} title="删除">×</button></div>{item.time && <small>{calendarMode === 'course' && item.kind === '课程' ? `${formatClock(item.time)}–${formatClock(item.endTime ?? addMinutesToTime(item.time, 60))}` : item.time}</small>}<span>{item.title}</span>{calendarMode === 'course' && <em>{item.course || item.kind}</em>}</div>)}{calendarMode === 'course' && dayItems.length > previewItems.length && <button className="week-more" onClick={() => setCalendarExpanded(true)}>＋{dayItems.length - previewItems.length}</button>}</div><button className="week-add" onClick={() => openCalendarForm(day.value)}>＋</button></section>;
         })}</div>
       </section>
     </section>
@@ -734,6 +738,7 @@ export default function Page() {
       <div className="row"><label>星期<select value={calendarDraft.weekday} onChange={(event) => setCalendarDraft({ ...calendarDraft, weekday: event.target.value })}>{weekDays.map((day) => <option key={day.value} value={day.value}>{day.label}</option>)}</select></label>{calendarMode === 'course' && <label>类型<select value={calendarDraft.kind} onChange={(event) => { const kind = event.target.value as '课程' | '任务'; const defaultCourse = courses.find((course) => course.name !== UNASSIGNED)?.name ?? ''; setCalendarDraft({ ...calendarDraft, kind, time: kind === '课程' ? calendarDraft.time || '09:00' : calendarDraft.time, endTime: kind === '课程' ? calendarDraft.endTime || addMinutesToTime(calendarDraft.time || '09:00', 60) : '', course: kind === '课程' ? calendarDraft.course || defaultCourse : '' }); setCalendarError(''); }}><option>课程</option><option>任务</option></select></label>}</div>
       <label>{calendarMode === 'course' ? '课程或任务名称' : '任务名称'}<input autoFocus required value={calendarDraft.title} onChange={(event) => setCalendarDraft({ ...calendarDraft, title: event.target.value })} placeholder={calendarMode === 'course' ? '例如：STAT 101 Lecture' : '例如：复习本周笔记'} /></label>
       {calendarMode === 'course' && calendarDraft.kind === '课程' && <label>所属课程（决定颜色）<select value={calendarDraft.course} onChange={(event) => setCalendarDraft({ ...calendarDraft, course: event.target.value })}><option value="">独立安排（按名称配色）</option>{courses.filter((course) => course.name !== UNASSIGNED).map((course) => <option key={course.name} value={course.name}>{course.name}</option>)}</select><small className="field-hint">Lecture、Lab 等不同安排选择同一门课程后会保持相同颜色。</small></label>}
+      {calendarMode === 'course' && calendarDraft.kind === '课程' && <label>上课地点（可选）<input value={calendarDraft.location} onChange={(event) => setCalendarDraft({ ...calendarDraft, location: event.target.value })} placeholder="例如：Mason Hall 2306" /></label>}
       {calendarMode === 'course' && calendarDraft.kind === '课程' ? <div className="row"><label>开始时间<input type="time" required value={calendarDraft.time} onChange={(event) => { const time = event.target.value; setCalendarDraft({ ...calendarDraft, time, endTime: !calendarDraft.endTime || timeToMinutes(calendarDraft.endTime) <= timeToMinutes(time) ? addMinutesToTime(time, 60) : calendarDraft.endTime }); setCalendarError(''); }} /></label><label>结束时间<input type="time" required value={calendarDraft.endTime} onChange={(event) => { setCalendarDraft({ ...calendarDraft, endTime: event.target.value }); setCalendarError(''); }} /></label></div> : <label>时间（可选）<input type="time" value={calendarDraft.time} onChange={(event) => setCalendarDraft({ ...calendarDraft, time: event.target.value })} /></label>}
       {calendarError && <p className="form-error">{calendarError}</p>}
       <div className="actions"><button type="button" className="plain" onClick={closeCalendarForm}>取消</button><button className="add">{editingCalendarItemId !== null ? '保存修改' : '保存安排'}</button></div>
@@ -748,7 +753,7 @@ export default function Page() {
         <div className="expanded-week-body" style={{ height: timetableHeight, backgroundSize: `100% ${54}px` }}>{weekDays.map((day) => <div className={`expanded-day-column ${today === day.value ? 'today' : ''}`} key={day.value}>{scheduledCourses.filter((item) => item.weekday === day.value).map((item) => {
           const start = timeToMinutes(item.time);
           const end = Math.max(start + 15, timeToMinutes(item.endTime ?? addMinutesToTime(item.time, 60)));
-          return <article className="course-time-bar" style={{ '--course-color': item.color ?? COURSE_COLORS[0], top: `${(start - timetableStart) / timetableDuration * 100}%`, height: `${(end - start) / timetableDuration * 100}%` } as React.CSSProperties} key={item.id}><strong>{item.title}</strong>{item.course && <em>{item.course}</em>}<span>{formatClock(item.time)}–{formatClock(item.endTime ?? addMinutesToTime(item.time, 60))}</span></article>;
+          return <article className="course-time-bar" title={[item.title, item.course, item.location, `${formatClock(item.time)}–${formatClock(item.endTime ?? addMinutesToTime(item.time, 60))}`].filter(Boolean).join(' · ')} style={{ '--course-color': item.color ?? COURSE_COLORS[0], top: `${(start - timetableStart) / timetableDuration * 100}%`, height: `${(end - start) / timetableDuration * 100}%` } as React.CSSProperties} key={item.id}><strong>{item.title}</strong>{(item.course || item.location) && <em>{[item.course, item.location].filter(Boolean).join(' · ')}</em>}<span>{formatClock(item.time)}–{formatClock(item.endTime ?? addMinutesToTime(item.time, 60))}</span></article>;
         })}</div>)}{!scheduledCourses.length && <p className="expanded-calendar-empty">还没有课程。关闭后点击某一天的＋添加。</p>}</div>
       </div></div>
     </section></div>}
