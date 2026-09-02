@@ -6,7 +6,7 @@ type Task = { id: number; title: string; course: string; due: string; done: bool
 type GradeCategory = { name: string; weight: number; kind: 'exam' | 'task'; score: number | null };
 type Course = { name: string; grading: GradeCategory[] };
 type GradeRow = { id: number; name: string; weight: string; kind: 'exam' | 'task' };
-type WeeklyItem = { id: number; weekday: number; title: string; time: string; kind: '课程' | '任务' };
+type WeeklyItem = { id: number; weekday: number; title: string; time: string; endTime?: string; kind: '课程' | '任务'; color?: string };
 type Forecast = { target: number; scores: Record<string, number> };
 type DataBundle = { format: 'deadline-tracker'; version: 1; savedAt: string; tasks: Task[]; courses: Course[]; weeklyCourses: WeeklyItem[]; weeklyAssignments: WeeklyItem[]; forecasts: Record<string, Forecast> };
 type LocalWritableFile = { write(data: string): Promise<void>; close(): Promise<void> };
@@ -26,6 +26,47 @@ const FILE_HANDLE_DB = 'deadline-tracker-file';
 const FILE_HANDLE_STORE = 'handles';
 const FILE_HANDLE_KEY = 'primary-data-file';
 const jsonPickerOptions = { types: [{ description: 'Deadline Tracker 数据', accept: { 'application/json': ['.json'] } }] };
+const COURSE_COLORS = ['#d76648', '#5579a6', '#63856b', '#9a68a0', '#c28a35', '#4f8c91', '#b85f78', '#766ab0', '#8b7657', '#4c8273', '#a85e42', '#6b7fba'];
+
+function timeToMinutes(time: string) {
+  const [hours, minutes] = time.split(':').map(Number);
+  return Number.isFinite(hours) && Number.isFinite(minutes) ? hours * 60 + minutes : 0;
+}
+
+function addMinutesToTime(time: string, amount: number) {
+  const minutes = Math.min(23 * 60 + 59, timeToMinutes(time) + amount);
+  return `${String(Math.floor(minutes / 60)).padStart(2, '0')}:${String(minutes % 60).padStart(2, '0')}`;
+}
+
+function formatClock(time: string) {
+  if (!time) return '';
+  const [hours, minutes] = time.split(':').map(Number);
+  return new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(2026, 0, 1, hours, minutes));
+}
+
+function normalizeWeeklyItems(value: unknown) {
+  if (!Array.isArray(value)) return [];
+  const colorsByCourse = new Map<string, string>();
+  return value.map((raw, index) => {
+    const item = raw as Partial<WeeklyItem>;
+    const kind = item.kind === '课程' ? '课程' as const : '任务' as const;
+    const title = typeof item.title === 'string' ? item.title : '未命名安排';
+    let color = typeof item.color === 'string' ? item.color : undefined;
+    if (kind === '课程') {
+      color = colorsByCourse.get(title) ?? color ?? COURSE_COLORS[colorsByCourse.size % COURSE_COLORS.length];
+      colorsByCourse.set(title, color);
+    }
+    return {
+      id: typeof item.id === 'number' ? item.id : Date.now() + index,
+      weekday: typeof item.weekday === 'number' ? item.weekday : 1,
+      title,
+      time: typeof item.time === 'string' ? item.time : '',
+      endTime: typeof item.endTime === 'string' ? item.endTime : (kind === '课程' && item.time ? addMinutesToTime(item.time, 60) : undefined),
+      kind,
+      color,
+    };
+  });
+}
 
 function openFileHandleDb() {
   return new Promise<IDBDatabase>((resolve, reject) => {
@@ -77,8 +118,8 @@ async function readDataFile(handle: LocalFileHandle) {
     savedAt: typeof raw.savedAt === 'string' ? raw.savedAt : new Date().toISOString(),
     tasks: raw.tasks.map((task) => ({ ...task, due: task.due.includes('T') ? task.due : `${task.due}T23:59`, notes: task.notes ?? '', gradeCategory: task.gradeCategory ?? '', score: typeof task.score === 'number' ? task.score : null })),
     courses: raw.courses.map((course) => ({ name: course.name, grading: Array.isArray(course.grading) ? course.grading.map((category) => ({ ...category, kind: category.kind === 'exam' ? 'exam' as const : 'task' as const, score: typeof category.score === 'number' ? category.score : null })) : [] })),
-    weeklyCourses: Array.isArray(raw.weeklyCourses) ? raw.weeklyCourses : [],
-    weeklyAssignments: Array.isArray(raw.weeklyAssignments) ? raw.weeklyAssignments : [],
+    weeklyCourses: normalizeWeeklyItems(raw.weeklyCourses),
+    weeklyAssignments: normalizeWeeklyItems(raw.weeklyAssignments),
     forecasts: raw.forecasts && typeof raw.forecasts === 'object' ? raw.forecasts : {},
   } satisfies DataBundle;
 }
@@ -111,7 +152,9 @@ export default function Page() {
   const [batchFormOpen, setBatchFormOpen] = useState(false);
   const [calendarMode, setCalendarMode] = useState<'course' | 'task'>('course');
   const [calendarFormOpen, setCalendarFormOpen] = useState(false);
-  const [calendarDraft, setCalendarDraft] = useState<{ weekday: string; title: string; time: string; kind: '课程' | '任务' }>({ weekday: '1', title: '', time: '', kind: '课程' });
+  const [calendarExpanded, setCalendarExpanded] = useState(false);
+  const [calendarError, setCalendarError] = useState('');
+  const [calendarDraft, setCalendarDraft] = useState<{ weekday: string; title: string; time: string; endTime: string; kind: '课程' | '任务' }>({ weekday: '1', title: '', time: '09:00', endTime: '10:00', kind: '课程' });
   const [weeklyCourses, setWeeklyCourses] = useState<WeeklyItem[]>([]);
   const [weeklyAssignments, setWeeklyAssignments] = useState<WeeklyItem[]>([]);
   const [forecasts, setForecasts] = useState<Record<string, Forecast>>({});
@@ -150,8 +193,8 @@ export default function Page() {
     setCourses(loadedCourses);
     setDraft((current) => ({ ...current, course: loadedCourses[0]?.name ?? '' }));
     setBatchDraft((current) => ({ ...current, course: loadedCourses[0]?.name ?? '' }));
-    try { setWeeklyCourses(JSON.parse(localStorage.getItem('deadline-weekly-courses') ?? '[]')); } catch { /* Start with an empty weekly course schedule. */ }
-    try { setWeeklyAssignments(JSON.parse(localStorage.getItem('deadline-weekly-assignments') ?? '[]')); } catch { /* Start with an empty weekly assignment schedule. */ }
+    try { setWeeklyCourses(normalizeWeeklyItems(JSON.parse(localStorage.getItem('deadline-weekly-courses') ?? '[]'))); } catch { /* Start with an empty weekly course schedule. */ }
+    try { setWeeklyAssignments(normalizeWeeklyItems(JSON.parse(localStorage.getItem('deadline-weekly-assignments') ?? '[]'))); } catch { /* Start with an empty weekly assignment schedule. */ }
     try { setForecasts(JSON.parse(localStorage.getItem('deadline-grade-forecasts') ?? '{}')); } catch { /* Start with fresh grade forecasts. */ }
     setStorageReady(true);
   }, []);
@@ -206,6 +249,13 @@ export default function Page() {
     }, 500);
     return () => window.clearTimeout(timer);
   }, [dataBundle, fileHandle, fileReady, storageReady]);
+
+  useEffect(() => {
+    if (!calendarExpanded) return;
+    const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') setCalendarExpanded(false); };
+    window.addEventListener('keydown', closeOnEscape);
+    return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [calendarExpanded]);
 
   function applyDataBundle(bundle: DataBundle) {
     setTasks(bundle.tasks);
@@ -483,14 +533,31 @@ export default function Page() {
   }
 
   function openCalendarForm(weekday: number) {
-    setCalendarDraft({ weekday: String(weekday), title: '', time: '', kind: calendarMode === 'course' ? '课程' : '任务' });
+    setCalendarDraft({ weekday: String(weekday), title: '', time: calendarMode === 'course' ? '09:00' : '', endTime: calendarMode === 'course' ? '10:00' : '', kind: calendarMode === 'course' ? '课程' : '任务' });
+    setCalendarError('');
     setCalendarFormOpen(true);
   }
 
   function saveCalendarItem(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!calendarDraft.title.trim()) return;
-    const item: WeeklyItem = { id: Date.now(), weekday: Number(calendarDraft.weekday), title: calendarDraft.title.trim(), time: calendarDraft.time, kind: calendarMode === 'course' ? calendarDraft.kind : '任务' };
+    if (calendarMode === 'course' && calendarDraft.kind === '课程' && (!calendarDraft.time || !calendarDraft.endTime || timeToMinutes(calendarDraft.endTime) <= timeToMinutes(calendarDraft.time))) {
+      setCalendarError('课程结束时间必须晚于开始时间。');
+      return;
+    }
+    const title = calendarDraft.title.trim();
+    const existingColor = weeklyCourses.find((item) => item.kind === '课程' && item.title.toLocaleLowerCase() === title.toLocaleLowerCase())?.color;
+    const usedColors = new Set(weeklyCourses.filter((item) => item.kind === '课程' && item.title.toLocaleLowerCase() !== title.toLocaleLowerCase()).map((item) => item.color).filter((color): color is string => Boolean(color)));
+    const availableColor = COURSE_COLORS.find((color) => !usedColors.has(color)) ?? COURSE_COLORS[weeklyCourses.filter((item) => item.kind === '课程').length % COURSE_COLORS.length];
+    const item: WeeklyItem = {
+      id: Date.now(),
+      weekday: Number(calendarDraft.weekday),
+      title,
+      time: calendarDraft.time,
+      endTime: calendarMode === 'course' && calendarDraft.kind === '课程' ? calendarDraft.endTime : undefined,
+      kind: calendarMode === 'course' ? calendarDraft.kind : '任务',
+      color: calendarMode === 'course' && calendarDraft.kind === '课程' ? existingColor ?? availableColor : undefined,
+    };
     if (calendarMode === 'course') setWeeklyCourses([...weeklyCourses, item]);
     else setWeeklyAssignments([...weeklyAssignments, item]);
     setCalendarFormOpen(false);
@@ -537,6 +604,14 @@ export default function Page() {
   const weekDays = [{ label: '周一', value: 1 }, { label: '周二', value: 2 }, { label: '周三', value: 3 }, { label: '周四', value: 4 }, { label: '周五', value: 5 }, { label: '周六', value: 6 }, { label: '周日', value: 0 }];
   const calendarItems = calendarMode === 'course' ? weeklyCourses : weeklyAssignments;
   const today = new Date().getDay();
+  const scheduledCourses = weeklyCourses.filter((item) => item.kind === '课程' && item.time);
+  const courseStarts = scheduledCourses.map((item) => timeToMinutes(item.time));
+  const courseEnds = scheduledCourses.map((item) => timeToMinutes(item.endTime ?? addMinutesToTime(item.time, 60)));
+  const timetableStart = Math.max(0, Math.floor(((courseStarts.length ? Math.min(...courseStarts) : 9 * 60) - 60) / 60) * 60);
+  const timetableEnd = Math.min(24 * 60, Math.max(timetableStart + 8 * 60, Math.ceil(((courseEnds.length ? Math.max(...courseEnds) : 17 * 60) + 60) / 60) * 60));
+  const timetableDuration = Math.max(60, timetableEnd - timetableStart);
+  const timetableHeight = Math.max(500, timetableDuration / 60 * 54);
+  const timetableHours = Array.from({ length: Math.floor(timetableDuration / 60) + 1 }, (_, index) => timetableStart + index * 60);
 
   return <main>
     <header>
@@ -560,7 +635,17 @@ export default function Page() {
         <button className="secondary" onClick={openCourseForm}>＋ 添加课程</button><button className="secondary" onClick={openBatchForm}>＋ 批量添加</button><button className="add" onClick={openTaskForm}>＋ 添加作业</button>
       </div>
     </header>
-    <section className="overview-grid"><div className="overview-left"><section className="urgent-panel"><div><p className="eyebrow">24 小时内</p><h2>即将到期</h2></div>{urgent.length ? <div className="urgent-list">{urgent.map((task) => <button key={task.id} className="urgent-item" onClick={() => setSelectedTask(task)}><span>{task.title}</span><small>{formatDate(task.due)}</small></button>)}</div> : <p className="urgent-empty">未来 24 小时没有截止事项。</p>}</section><section className="metrics"><article><span>待完成</span><strong>{stats.total}</strong><small>项作业</small></article><article className="accent"><span>未来 7 天</span><strong>{stats.soon}</strong><small>项需要关注</small></article></section></div><section className="calendar-panel" aria-label="每周日历"><div className="calendar-head"><p className="eyebrow">日历</p><div className="calendar-tabs"><button className={calendarMode === 'course' ? 'selected' : ''} onClick={() => setCalendarMode('course')}>每周课程</button><button className={calendarMode === 'task' ? 'selected' : ''} onClick={() => setCalendarMode('task')}>每周作业</button></div></div><div className="week-grid">{weekDays.map((day) => <section className={`week-day ${today === day.value ? 'today' : ''}`} key={day.value}><div className="week-day-head"><span>{day.label}</span>{today === day.value && <small>今天</small>}</div><div className="week-items">{calendarItems.filter((item) => item.weekday === day.value).map((item) => <div className="week-item" key={item.id}><button onClick={() => deleteCalendarItem(item.id)} aria-label={`删除 ${item.title}`} title="删除">×</button>{item.time && <small>{item.time}</small>}<span>{item.title}</span>{calendarMode === 'course' && <em>{item.kind}</em>}</div>)}</div><button className="week-add" onClick={() => openCalendarForm(day.value)}>＋</button></section>)}</div></section></section>
+    <section className="overview-grid">
+      <div className="overview-left"><section className="urgent-panel"><div><p className="eyebrow">24 小时内</p><h2>即将到期</h2></div>{urgent.length ? <div className="urgent-list">{urgent.map((task) => <button key={task.id} className="urgent-item" onClick={() => setSelectedTask(task)}><span>{task.title}</span><small>{formatDate(task.due)}</small></button>)}</div> : <p className="urgent-empty">未来 24 小时没有截止事项。</p>}</section><section className="metrics"><article><span>待完成</span><strong>{stats.total}</strong><small>项作业</small></article><article className="accent"><span>未来 7 天</span><strong>{stats.soon}</strong><small>项需要关注</small></article></section></div>
+      <section className={`calendar-panel ${calendarMode === 'course' ? 'expandable' : ''}`} aria-label="每周日历" onClick={(event) => { if (calendarMode === 'course' && !(event.target as HTMLElement).closest('button')) setCalendarExpanded(true); }}>
+        <div className="calendar-head"><p className="eyebrow">日历</p><div className="calendar-head-actions">{calendarMode === 'course' && <button className="calendar-expand-button" onClick={() => setCalendarExpanded(true)}>展开课表</button>}<div className="calendar-tabs"><button className={calendarMode === 'course' ? 'selected' : ''} onClick={() => setCalendarMode('course')}>每周课程</button><button className={calendarMode === 'task' ? 'selected' : ''} onClick={() => setCalendarMode('task')}>每周作业</button></div></div></div>
+        <div className="week-grid">{weekDays.map((day) => {
+          const dayItems = calendarItems.filter((item) => item.weekday === day.value);
+          const previewItems = calendarMode === 'course' ? dayItems.slice(0, 3) : dayItems;
+          return <section className={`week-day ${today === day.value ? 'today' : ''}`} key={day.value}><div className="week-day-head"><span>{day.label}</span>{today === day.value && <small>今天</small>}</div><div className="week-items">{previewItems.map((item) => <div className={`week-item ${calendarMode === 'course' && item.kind === '课程' ? 'course-preview-item' : ''}`} style={calendarMode === 'course' && item.color ? { '--course-color': item.color } as React.CSSProperties : undefined} key={item.id}><button onClick={() => deleteCalendarItem(item.id)} aria-label={`删除 ${item.title}`} title="删除">×</button>{item.time && <small>{calendarMode === 'course' && item.kind === '课程' ? `${formatClock(item.time)}–${formatClock(item.endTime ?? addMinutesToTime(item.time, 60))}` : item.time}</small>}<span>{item.title}</span>{calendarMode === 'course' && <em>{item.kind}</em>}</div>)}{calendarMode === 'course' && dayItems.length > previewItems.length && <button className="week-more" onClick={() => setCalendarExpanded(true)}>＋{dayItems.length - previewItems.length}</button>}</div><button className="week-add" onClick={() => openCalendarForm(day.value)}>＋</button></section>;
+        })}</div>
+      </section>
+    </section>
     <section className="workspace">
       <aside><div className="aside-title"><p>筛选</p><button onClick={openCourseForm}>＋ 课程</button></div><button className={filter === '全部' ? 'selected' : ''} onClick={() => setFilter('全部')}>全部<span>{tasks.length}</span></button><button className={filter === '待完成' ? 'selected' : ''} onClick={() => setFilter('待完成')}>待完成<span>{active.length}</span></button>{courses.map((course) => <div className="course-nav-row" key={course.name}><button className={filter === course.name ? 'selected' : ''} onClick={() => setFilter(course.name)}>{course.name}<span>{tasks.filter((task) => task.course === course.name).length}</span></button>{course.name !== UNASSIGNED && <button className="course-settings" aria-label={`设置 ${course.name}`} title={`设置 ${course.name}`} onClick={() => editCourse(course)}>⚙</button>}</div>)}</aside>
       <div className="list"><div className="list-head"><div><p className="eyebrow">作业清单</p><h2>{filter}</h2></div><span>{shown.length} 项</span></div>
@@ -595,11 +680,26 @@ export default function Page() {
 
     {calendarFormOpen && <div className="modal-backdrop" onMouseDown={() => setCalendarFormOpen(false)}><form className="modal calendar-modal" onSubmit={saveCalendarItem} onMouseDown={(event) => event.stopPropagation()}>
       <div><p className="eyebrow">每周安排</p><h2>{calendarMode === 'course' ? '添加课程或任务' : '添加每周任务'}</h2></div>
-      <div className="row"><label>星期<select value={calendarDraft.weekday} onChange={(event) => setCalendarDraft({ ...calendarDraft, weekday: event.target.value })}>{weekDays.map((day) => <option key={day.value} value={day.value}>{day.label}</option>)}</select></label>{calendarMode === 'course' && <label>类型<select value={calendarDraft.kind} onChange={(event) => setCalendarDraft({ ...calendarDraft, kind: event.target.value as '课程' | '任务' })}><option>课程</option><option>任务</option></select></label>}</div>
+      <div className="row"><label>星期<select value={calendarDraft.weekday} onChange={(event) => setCalendarDraft({ ...calendarDraft, weekday: event.target.value })}>{weekDays.map((day) => <option key={day.value} value={day.value}>{day.label}</option>)}</select></label>{calendarMode === 'course' && <label>类型<select value={calendarDraft.kind} onChange={(event) => { const kind = event.target.value as '课程' | '任务'; setCalendarDraft({ ...calendarDraft, kind, time: kind === '课程' ? calendarDraft.time || '09:00' : calendarDraft.time, endTime: kind === '课程' ? calendarDraft.endTime || addMinutesToTime(calendarDraft.time || '09:00', 60) : '' }); setCalendarError(''); }}><option>课程</option><option>任务</option></select></label>}</div>
       <label>{calendarMode === 'course' ? '课程或任务名称' : '任务名称'}<input autoFocus required value={calendarDraft.title} onChange={(event) => setCalendarDraft({ ...calendarDraft, title: event.target.value })} placeholder={calendarMode === 'course' ? '例如：STAT 101 Lecture' : '例如：复习本周笔记'} /></label>
-      <label>时间（可选）<input type="time" value={calendarDraft.time} onChange={(event) => setCalendarDraft({ ...calendarDraft, time: event.target.value })} /></label>
+      {calendarMode === 'course' && calendarDraft.kind === '课程' ? <div className="row"><label>开始时间<input type="time" required value={calendarDraft.time} onChange={(event) => { const time = event.target.value; setCalendarDraft({ ...calendarDraft, time, endTime: !calendarDraft.endTime || timeToMinutes(calendarDraft.endTime) <= timeToMinutes(time) ? addMinutesToTime(time, 60) : calendarDraft.endTime }); setCalendarError(''); }} /></label><label>结束时间<input type="time" required value={calendarDraft.endTime} onChange={(event) => { setCalendarDraft({ ...calendarDraft, endTime: event.target.value }); setCalendarError(''); }} /></label></div> : <label>时间（可选）<input type="time" value={calendarDraft.time} onChange={(event) => setCalendarDraft({ ...calendarDraft, time: event.target.value })} /></label>}
+      {calendarError && <p className="form-error">{calendarError}</p>}
       <div className="actions"><button type="button" className="plain" onClick={() => setCalendarFormOpen(false)}>取消</button><button className="add">保存安排</button></div>
     </form></div>}
+
+    {calendarExpanded && <div className="calendar-expanded-backdrop" role="presentation" onClick={() => setCalendarExpanded(false)}><section className="expanded-calendar" role="dialog" aria-modal="true" aria-labelledby="expanded-calendar-title">
+      <div className="expanded-calendar-head"><div><p className="eyebrow">每周课程</p><h2 id="expanded-calendar-title">课程时间表</h2><p>课程条的长度对应上课时长 · 点击任意位置关闭</p></div><button aria-label="关闭展开课表">×</button></div>
+      <div className="timetable-scroll"><div className="expanded-calendar-grid">
+        <div className="expanded-corner" />
+        <div className="expanded-day-heads">{weekDays.map((day) => <div className={today === day.value ? 'today' : ''} key={day.value}><span>{day.label}</span>{today === day.value && <small>今天</small>}</div>)}</div>
+        <div className="expanded-time-axis" style={{ height: timetableHeight }}>{timetableHours.map((minutes) => <span style={{ top: `${(minutes - timetableStart) / timetableDuration * 100}%` }} key={minutes}>{String(Math.floor(minutes / 60)).padStart(2, '0')}:00</span>)}</div>
+        <div className="expanded-week-body" style={{ height: timetableHeight, backgroundSize: `100% ${54}px` }}>{weekDays.map((day) => <div className={`expanded-day-column ${today === day.value ? 'today' : ''}`} key={day.value}>{scheduledCourses.filter((item) => item.weekday === day.value).map((item) => {
+          const start = timeToMinutes(item.time);
+          const end = Math.max(start + 15, timeToMinutes(item.endTime ?? addMinutesToTime(item.time, 60)));
+          return <article className="course-time-bar" style={{ '--course-color': item.color ?? COURSE_COLORS[0], top: `${(start - timetableStart) / timetableDuration * 100}%`, height: `${(end - start) / timetableDuration * 100}%` } as React.CSSProperties} key={item.id}><strong>{item.title}</strong><span>{formatClock(item.time)}–{formatClock(item.endTime ?? addMinutesToTime(item.time, 60))}</span></article>;
+        })}</div>)}{!scheduledCourses.length && <p className="expanded-calendar-empty">还没有课程。关闭后点击某一天的＋添加。</p>}</div>
+      </div></div>
+    </section></div>}
 
     {courseFormOpen && <div className="modal-backdrop" onMouseDown={closeCourseForm}><form className="modal course-modal" onSubmit={saveCourse} onMouseDown={(event) => event.stopPropagation()}>
       <div><p className="eyebrow">课程管理</p><h2>{editingCourse ? '编辑课程评分' : '添加课程'}</h2><p className="modal-copy">设置课程的评分项目；填写后各项比例需要合计 100%。</p></div>
