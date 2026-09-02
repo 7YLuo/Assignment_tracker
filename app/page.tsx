@@ -1,12 +1,12 @@
 'use client';
 
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 
 type Task = { id: number; title: string; course: string; due: string; done: boolean; notes: string; gradeCategory: string; score: number | null };
 type GradeCategory = { name: string; weight: number; kind: 'exam' | 'task'; score: number | null };
 type Course = { name: string; grading: GradeCategory[] };
 type GradeRow = { id: number; name: string; weight: string; kind: 'exam' | 'task' };
-type WeeklyItem = { id: number; weekday: number; title: string; time: string; endTime?: string; kind: '课程' | '任务'; color?: string };
+type WeeklyItem = { id: number; weekday: number; title: string; time: string; endTime?: string; kind: '课程' | '任务'; course?: string; color?: string };
 type Forecast = { target: number; scores: Record<string, number> };
 type DataBundle = { format: 'deadline-tracker'; version: 1; savedAt: string; tasks: Task[]; courses: Course[]; weeklyCourses: WeeklyItem[]; weeklyAssignments: WeeklyItem[]; forecasts: Record<string, Forecast> };
 type LocalWritableFile = { write(data: string): Promise<void>; close(): Promise<void> };
@@ -51,10 +51,12 @@ function normalizeWeeklyItems(value: unknown) {
     const item = raw as Partial<WeeklyItem>;
     const kind = item.kind === '课程' ? '课程' as const : '任务' as const;
     const title = typeof item.title === 'string' ? item.title : '未命名安排';
+    const course = typeof item.course === 'string' ? item.course : undefined;
     let color = typeof item.color === 'string' ? item.color : undefined;
     if (kind === '课程') {
-      color = colorsByCourse.get(title) ?? color ?? COURSE_COLORS[colorsByCourse.size % COURSE_COLORS.length];
-      colorsByCourse.set(title, color);
+      const colorKey = (course || title).toLocaleLowerCase();
+      color = colorsByCourse.get(colorKey) ?? color ?? COURSE_COLORS[colorsByCourse.size % COURSE_COLORS.length];
+      colorsByCourse.set(colorKey, color);
     }
     return {
       id: typeof item.id === 'number' ? item.id : Date.now() + index,
@@ -63,6 +65,7 @@ function normalizeWeeklyItems(value: unknown) {
       time: typeof item.time === 'string' ? item.time : '',
       endTime: typeof item.endTime === 'string' ? item.endTime : (kind === '课程' && item.time ? addMinutesToTime(item.time, 60) : undefined),
       kind,
+      course,
       color,
     };
   });
@@ -146,6 +149,8 @@ export default function Page() {
   const [fileStatus, setFileStatus] = useState('尚未连接本地数据文件');
   const [fileStatusKind, setFileStatusKind] = useState<'idle' | 'saving' | 'saved' | 'warning' | 'error'>('idle');
   const backupInputRef = useRef<HTMLInputElement>(null);
+  const calendarPreviewRef = useRef<HTMLElement>(null);
+  const expandedCalendarRef = useRef<HTMLElement>(null);
   const [filter, setFilter] = useState('全部');
   const [categoryFilter, setCategoryFilter] = useState('全部类别');
   const [formOpen, setFormOpen] = useState(false);
@@ -154,7 +159,7 @@ export default function Page() {
   const [calendarFormOpen, setCalendarFormOpen] = useState(false);
   const [calendarExpanded, setCalendarExpanded] = useState(false);
   const [calendarError, setCalendarError] = useState('');
-  const [calendarDraft, setCalendarDraft] = useState<{ weekday: string; title: string; time: string; endTime: string; kind: '课程' | '任务' }>({ weekday: '1', title: '', time: '09:00', endTime: '10:00', kind: '课程' });
+  const [calendarDraft, setCalendarDraft] = useState<{ weekday: string; title: string; time: string; endTime: string; kind: '课程' | '任务'; course: string }>({ weekday: '1', title: '', time: '09:00', endTime: '10:00', kind: '课程', course: seedCourses[0]?.name ?? '' });
   const [weeklyCourses, setWeeklyCourses] = useState<WeeklyItem[]>([]);
   const [weeklyAssignments, setWeeklyAssignments] = useState<WeeklyItem[]>([]);
   const [forecasts, setForecasts] = useState<Record<string, Forecast>>({});
@@ -255,6 +260,22 @@ export default function Page() {
     const closeOnEscape = (event: KeyboardEvent) => { if (event.key === 'Escape') setCalendarExpanded(false); };
     window.addEventListener('keydown', closeOnEscape);
     return () => window.removeEventListener('keydown', closeOnEscape);
+  }, [calendarExpanded]);
+
+  useLayoutEffect(() => {
+    if (!calendarExpanded || !calendarPreviewRef.current || !expandedCalendarRef.current) return;
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    const preview = calendarPreviewRef.current.getBoundingClientRect();
+    const expanded = expandedCalendarRef.current.getBoundingClientRect();
+    const offsetX = preview.left + preview.width / 2 - (expanded.left + expanded.width / 2);
+    const offsetY = preview.top + preview.height / 2 - (expanded.top + expanded.height / 2);
+    const scaleX = Math.max(0.15, preview.width / expanded.width);
+    const scaleY = Math.max(0.15, preview.height / expanded.height);
+    const animation = expandedCalendarRef.current.animate([
+      { opacity: 0.55, transform: `translate(${offsetX}px, ${offsetY}px) scale(${scaleX}, ${scaleY})`, borderRadius: '12px' },
+      { opacity: 1, transform: 'translate(0, 0) scale(1, 1)', borderRadius: '16px' },
+    ], { duration: 300, easing: 'cubic-bezier(.22,.78,.24,1)', fill: 'both' });
+    return () => animation.cancel();
   }, [calendarExpanded]);
 
   function applyDataBundle(bundle: DataBundle) {
@@ -533,7 +554,8 @@ export default function Page() {
   }
 
   function openCalendarForm(weekday: number) {
-    setCalendarDraft({ weekday: String(weekday), title: '', time: calendarMode === 'course' ? '09:00' : '', endTime: calendarMode === 'course' ? '10:00' : '', kind: calendarMode === 'course' ? '课程' : '任务' });
+    const defaultCourse = courses.find((course) => course.name !== UNASSIGNED)?.name ?? '';
+    setCalendarDraft({ weekday: String(weekday), title: '', time: calendarMode === 'course' ? '09:00' : '', endTime: calendarMode === 'course' ? '10:00' : '', kind: calendarMode === 'course' ? '课程' : '任务', course: calendarMode === 'course' ? defaultCourse : '' });
     setCalendarError('');
     setCalendarFormOpen(true);
   }
@@ -546,8 +568,11 @@ export default function Page() {
       return;
     }
     const title = calendarDraft.title.trim();
-    const existingColor = weeklyCourses.find((item) => item.kind === '课程' && item.title.toLocaleLowerCase() === title.toLocaleLowerCase())?.color;
-    const usedColors = new Set(weeklyCourses.filter((item) => item.kind === '课程' && item.title.toLocaleLowerCase() !== title.toLocaleLowerCase()).map((item) => item.color).filter((color): color is string => Boolean(color)));
+    const course = calendarMode === 'course' && calendarDraft.kind === '课程' ? calendarDraft.course : '';
+    const colorKey = (course || title).toLocaleLowerCase();
+    const itemColorKey = (item: WeeklyItem) => (item.course || item.title).toLocaleLowerCase();
+    const existingColor = weeklyCourses.find((item) => item.kind === '课程' && itemColorKey(item) === colorKey)?.color;
+    const usedColors = new Set(weeklyCourses.filter((item) => item.kind === '课程' && itemColorKey(item) !== colorKey).map((item) => item.color).filter((color): color is string => Boolean(color)));
     const availableColor = COURSE_COLORS.find((color) => !usedColors.has(color)) ?? COURSE_COLORS[weeklyCourses.filter((item) => item.kind === '课程').length % COURSE_COLORS.length];
     const item: WeeklyItem = {
       id: Date.now(),
@@ -556,6 +581,7 @@ export default function Page() {
       time: calendarDraft.time,
       endTime: calendarMode === 'course' && calendarDraft.kind === '课程' ? calendarDraft.endTime : undefined,
       kind: calendarMode === 'course' ? calendarDraft.kind : '任务',
+      course: course || undefined,
       color: calendarMode === 'course' && calendarDraft.kind === '课程' ? existingColor ?? availableColor : undefined,
     };
     if (calendarMode === 'course') setWeeklyCourses([...weeklyCourses, item]);
@@ -637,12 +663,12 @@ export default function Page() {
     </header>
     <section className="overview-grid">
       <div className="overview-left"><section className="urgent-panel"><div><p className="eyebrow">24 小时内</p><h2>即将到期</h2></div>{urgent.length ? <div className="urgent-list">{urgent.map((task) => <button key={task.id} className="urgent-item" onClick={() => setSelectedTask(task)}><span>{task.title}</span><small>{formatDate(task.due)}</small></button>)}</div> : <p className="urgent-empty">未来 24 小时没有截止事项。</p>}</section><section className="metrics"><article><span>待完成</span><strong>{stats.total}</strong><small>项作业</small></article><article className="accent"><span>未来 7 天</span><strong>{stats.soon}</strong><small>项需要关注</small></article></section></div>
-      <section className={`calendar-panel ${calendarMode === 'course' ? 'expandable' : ''}`} aria-label="每周日历" onClick={(event) => { if (calendarMode === 'course' && !(event.target as HTMLElement).closest('button')) setCalendarExpanded(true); }}>
+      <section ref={calendarPreviewRef} className={`calendar-panel ${calendarMode === 'course' ? 'expandable' : ''}`} aria-label="每周日历" onClick={(event) => { if (calendarMode === 'course' && !(event.target as HTMLElement).closest('button')) setCalendarExpanded(true); }}>
         <div className="calendar-head"><p className="eyebrow">日历</p><div className="calendar-head-actions">{calendarMode === 'course' && <button className="calendar-expand-button" onClick={() => setCalendarExpanded(true)}>展开课表</button>}<div className="calendar-tabs"><button className={calendarMode === 'course' ? 'selected' : ''} onClick={() => setCalendarMode('course')}>每周课程</button><button className={calendarMode === 'task' ? 'selected' : ''} onClick={() => setCalendarMode('task')}>每周作业</button></div></div></div>
         <div className="week-grid">{weekDays.map((day) => {
           const dayItems = calendarItems.filter((item) => item.weekday === day.value);
           const previewItems = calendarMode === 'course' ? dayItems.slice(0, 3) : dayItems;
-          return <section className={`week-day ${today === day.value ? 'today' : ''}`} key={day.value}><div className="week-day-head"><span>{day.label}</span>{today === day.value && <small>今天</small>}</div><div className="week-items">{previewItems.map((item) => <div className={`week-item ${calendarMode === 'course' && item.kind === '课程' ? 'course-preview-item' : ''}`} style={calendarMode === 'course' && item.color ? { '--course-color': item.color } as React.CSSProperties : undefined} key={item.id}><button onClick={() => deleteCalendarItem(item.id)} aria-label={`删除 ${item.title}`} title="删除">×</button>{item.time && <small>{calendarMode === 'course' && item.kind === '课程' ? `${formatClock(item.time)}–${formatClock(item.endTime ?? addMinutesToTime(item.time, 60))}` : item.time}</small>}<span>{item.title}</span>{calendarMode === 'course' && <em>{item.kind}</em>}</div>)}{calendarMode === 'course' && dayItems.length > previewItems.length && <button className="week-more" onClick={() => setCalendarExpanded(true)}>＋{dayItems.length - previewItems.length}</button>}</div><button className="week-add" onClick={() => openCalendarForm(day.value)}>＋</button></section>;
+          return <section className={`week-day ${today === day.value ? 'today' : ''}`} key={day.value}><div className="week-day-head"><span>{day.label}</span>{today === day.value && <small>今天</small>}</div><div className="week-items">{previewItems.map((item) => <div className={`week-item ${calendarMode === 'course' && item.kind === '课程' ? 'course-preview-item' : ''}`} style={calendarMode === 'course' && item.color ? { '--course-color': item.color } as React.CSSProperties : undefined} key={item.id}><button onClick={() => deleteCalendarItem(item.id)} aria-label={`删除 ${item.title}`} title="删除">×</button>{item.time && <small>{calendarMode === 'course' && item.kind === '课程' ? `${formatClock(item.time)}–${formatClock(item.endTime ?? addMinutesToTime(item.time, 60))}` : item.time}</small>}<span>{item.title}</span>{calendarMode === 'course' && <em>{item.course || item.kind}</em>}</div>)}{calendarMode === 'course' && dayItems.length > previewItems.length && <button className="week-more" onClick={() => setCalendarExpanded(true)}>＋{dayItems.length - previewItems.length}</button>}</div><button className="week-add" onClick={() => openCalendarForm(day.value)}>＋</button></section>;
         })}</div>
       </section>
     </section>
@@ -680,14 +706,15 @@ export default function Page() {
 
     {calendarFormOpen && <div className="modal-backdrop" onMouseDown={() => setCalendarFormOpen(false)}><form className="modal calendar-modal" onSubmit={saveCalendarItem} onMouseDown={(event) => event.stopPropagation()}>
       <div><p className="eyebrow">每周安排</p><h2>{calendarMode === 'course' ? '添加课程或任务' : '添加每周任务'}</h2></div>
-      <div className="row"><label>星期<select value={calendarDraft.weekday} onChange={(event) => setCalendarDraft({ ...calendarDraft, weekday: event.target.value })}>{weekDays.map((day) => <option key={day.value} value={day.value}>{day.label}</option>)}</select></label>{calendarMode === 'course' && <label>类型<select value={calendarDraft.kind} onChange={(event) => { const kind = event.target.value as '课程' | '任务'; setCalendarDraft({ ...calendarDraft, kind, time: kind === '课程' ? calendarDraft.time || '09:00' : calendarDraft.time, endTime: kind === '课程' ? calendarDraft.endTime || addMinutesToTime(calendarDraft.time || '09:00', 60) : '' }); setCalendarError(''); }}><option>课程</option><option>任务</option></select></label>}</div>
+      <div className="row"><label>星期<select value={calendarDraft.weekday} onChange={(event) => setCalendarDraft({ ...calendarDraft, weekday: event.target.value })}>{weekDays.map((day) => <option key={day.value} value={day.value}>{day.label}</option>)}</select></label>{calendarMode === 'course' && <label>类型<select value={calendarDraft.kind} onChange={(event) => { const kind = event.target.value as '课程' | '任务'; const defaultCourse = courses.find((course) => course.name !== UNASSIGNED)?.name ?? ''; setCalendarDraft({ ...calendarDraft, kind, time: kind === '课程' ? calendarDraft.time || '09:00' : calendarDraft.time, endTime: kind === '课程' ? calendarDraft.endTime || addMinutesToTime(calendarDraft.time || '09:00', 60) : '', course: kind === '课程' ? calendarDraft.course || defaultCourse : '' }); setCalendarError(''); }}><option>课程</option><option>任务</option></select></label>}</div>
       <label>{calendarMode === 'course' ? '课程或任务名称' : '任务名称'}<input autoFocus required value={calendarDraft.title} onChange={(event) => setCalendarDraft({ ...calendarDraft, title: event.target.value })} placeholder={calendarMode === 'course' ? '例如：STAT 101 Lecture' : '例如：复习本周笔记'} /></label>
+      {calendarMode === 'course' && calendarDraft.kind === '课程' && <label>所属课程（决定颜色）<select value={calendarDraft.course} onChange={(event) => setCalendarDraft({ ...calendarDraft, course: event.target.value })}><option value="">独立安排（按名称配色）</option>{courses.filter((course) => course.name !== UNASSIGNED).map((course) => <option key={course.name} value={course.name}>{course.name}</option>)}</select><small className="field-hint">Lecture、Lab 等不同安排选择同一门课程后会保持相同颜色。</small></label>}
       {calendarMode === 'course' && calendarDraft.kind === '课程' ? <div className="row"><label>开始时间<input type="time" required value={calendarDraft.time} onChange={(event) => { const time = event.target.value; setCalendarDraft({ ...calendarDraft, time, endTime: !calendarDraft.endTime || timeToMinutes(calendarDraft.endTime) <= timeToMinutes(time) ? addMinutesToTime(time, 60) : calendarDraft.endTime }); setCalendarError(''); }} /></label><label>结束时间<input type="time" required value={calendarDraft.endTime} onChange={(event) => { setCalendarDraft({ ...calendarDraft, endTime: event.target.value }); setCalendarError(''); }} /></label></div> : <label>时间（可选）<input type="time" value={calendarDraft.time} onChange={(event) => setCalendarDraft({ ...calendarDraft, time: event.target.value })} /></label>}
       {calendarError && <p className="form-error">{calendarError}</p>}
       <div className="actions"><button type="button" className="plain" onClick={() => setCalendarFormOpen(false)}>取消</button><button className="add">保存安排</button></div>
     </form></div>}
 
-    {calendarExpanded && <div className="calendar-expanded-backdrop" role="presentation" onClick={() => setCalendarExpanded(false)}><section className="expanded-calendar" role="dialog" aria-modal="true" aria-labelledby="expanded-calendar-title">
+    {calendarExpanded && <div className="calendar-expanded-backdrop" role="presentation" onClick={() => setCalendarExpanded(false)}><section ref={expandedCalendarRef} className="expanded-calendar" role="dialog" aria-modal="true" aria-labelledby="expanded-calendar-title">
       <div className="expanded-calendar-head"><div><p className="eyebrow">每周课程</p><h2 id="expanded-calendar-title">课程时间表</h2><p>课程条的长度对应上课时长 · 点击任意位置关闭</p></div><button aria-label="关闭展开课表">×</button></div>
       <div className="timetable-scroll"><div className="expanded-calendar-grid">
         <div className="expanded-corner" />
@@ -696,7 +723,7 @@ export default function Page() {
         <div className="expanded-week-body" style={{ height: timetableHeight, backgroundSize: `100% ${54}px` }}>{weekDays.map((day) => <div className={`expanded-day-column ${today === day.value ? 'today' : ''}`} key={day.value}>{scheduledCourses.filter((item) => item.weekday === day.value).map((item) => {
           const start = timeToMinutes(item.time);
           const end = Math.max(start + 15, timeToMinutes(item.endTime ?? addMinutesToTime(item.time, 60)));
-          return <article className="course-time-bar" style={{ '--course-color': item.color ?? COURSE_COLORS[0], top: `${(start - timetableStart) / timetableDuration * 100}%`, height: `${(end - start) / timetableDuration * 100}%` } as React.CSSProperties} key={item.id}><strong>{item.title}</strong><span>{formatClock(item.time)}–{formatClock(item.endTime ?? addMinutesToTime(item.time, 60))}</span></article>;
+          return <article className="course-time-bar" style={{ '--course-color': item.color ?? COURSE_COLORS[0], top: `${(start - timetableStart) / timetableDuration * 100}%`, height: `${(end - start) / timetableDuration * 100}%` } as React.CSSProperties} key={item.id}><strong>{item.title}</strong>{item.course && <em>{item.course}</em>}<span>{formatClock(item.time)}–{formatClock(item.endTime ?? addMinutesToTime(item.time, 60))}</span></article>;
         })}</div>)}{!scheduledCourses.length && <p className="expanded-calendar-empty">还没有课程。关闭后点击某一天的＋添加。</p>}</div>
       </div></div>
     </section></div>}

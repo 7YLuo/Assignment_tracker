@@ -72,8 +72,8 @@
 .course-preview-item em { color: color-mix(in srgb, var(--course-color) 82%, #4b4540); }
 .week-more { justify-self: start; border: 0; border-radius: 4px; background: #e8e1d7; color: #776f66; padding: 3px 6px; font: 9px 'DM Mono'; }
 .week-add { justify-self: center; border: 0; background: transparent; color: #a05b49; font-size: 16px; line-height: 1; padding: 2px; }
-.calendar-expanded-backdrop { position: fixed; z-index: 40; inset: 0; display: grid; place-items: center; padding: 24px; background: #27231e9c; animation: calendar-fade-in 130ms ease-out both; }
-.expanded-calendar { width: min(1180px, 100%); max-height: calc(100vh - 48px); overflow: hidden; border: 1px solid #ded5c9; border-radius: 16px; background: #f9f6ef; box-shadow: 0 28px 90px #0005; cursor: zoom-out; animation: calendar-expand-in 170ms cubic-bezier(.2,.8,.25,1) both; }
+.calendar-expanded-backdrop { position: fixed; z-index: 40; inset: 0; display: grid; place-items: center; padding: 24px; background: #27231e9c; animation: calendar-fade-in 300ms ease-out both; }
+.expanded-calendar { width: min(1180px, 100%); max-height: calc(100vh - 48px); overflow: hidden; border: 1px solid #ded5c9; border-radius: 16px; background: #f9f6ef; box-shadow: 0 28px 90px #0005; cursor: zoom-out; transform-origin: center; will-change: transform, opacity; }
 .expanded-calendar-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 20px; padding: 20px 23px 16px; border-bottom: 1px solid #e2dbd0; }
 .expanded-calendar-head .eyebrow { margin-bottom: 5px; }
 .expanded-calendar-head h2 { margin: 0; font: 600 28px 'Playfair Display'; }
@@ -93,10 +93,11 @@
 .expanded-day-column.today { background: #f8ddd01f; }
 .course-time-bar { position: absolute; left: 5px; right: 5px; min-height: 20px; overflow: hidden; display: grid; align-content: start; gap: 3px; border-left: 4px solid var(--course-color); border-radius: 6px; padding: 6px 7px; background: color-mix(in srgb, var(--course-color) 18%, #fff); color: color-mix(in srgb, var(--course-color) 62%, #25211e); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--course-color) 22%, transparent); }
 .course-time-bar strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.course-time-bar em { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 9px; font-style: normal; opacity: .72; }
 .course-time-bar span { font: 9px 'DM Mono'; opacity: .78; }
 .expanded-calendar-empty { position: absolute; inset: 0; display: grid; place-items: center; margin: 0; color: #827a71; font-size: 13px; }
 @keyframes calendar-fade-in { from { opacity: 0; } to { opacity: 1; } }
-@keyframes calendar-expand-in { from { opacity: 0; transform: scale(.975) translateY(7px); } to { opacity: 1; transform: scale(1) translateY(0); } }
+.field-hint { color: #8a8279; font-size: 11px; font-weight: 400; line-height: 1.45; }
 .metrics { grid-template-columns: repeat(2, 1fr); gap: 14px; }
 .metrics article { min-width: 0; padding: 17px 18px; }
 .metrics strong { font-size: 32px; }
