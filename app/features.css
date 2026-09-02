@@ -61,12 +61,14 @@
 .week-day-head { display: flex; align-items: center; justify-content: space-between; gap: 3px; color: #625b52; font: 10px 'DM Mono'; }
 .week-day-head small { color: #c3543b; font-size: 9px; }
 .week-items { display: grid; align-content: start; gap: 5px; }
-.week-item { position: relative; display: grid; gap: 2px; padding: 5px; border-radius: 5px; background: #ece7de; color: #49433d; overflow: hidden; }
+.week-item { position: relative; display: grid; gap: 2px; padding: 5px 31px 5px 5px; border-radius: 5px; background: #ece7de; color: #49433d; overflow: hidden; }
 .week-item small { color: #817a72; font: 9px 'DM Mono'; }
 .week-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; font-weight: 600; }
 .week-item em { color: #9a5040; font-size: 9px; font-style: normal; }
-.week-item button { position: absolute; top: 1px; right: 3px; border: 0; background: transparent; color: #8f877c; padding: 0; line-height: 1; opacity: 0; }
-.week-item:hover button { opacity: 1; }
+.week-item-actions { position: absolute; top: 2px; right: 3px; display: flex; align-items: center; gap: 1px; opacity: 0; transition: opacity 120ms ease; }
+.week-item-actions button { border: 0; background: transparent; color: #766f66; padding: 1px 2px; font-size: 12px; line-height: 1; }
+.week-item-actions button:hover { color: #a44934; }
+.week-item:hover .week-item-actions, .week-item:focus-within .week-item-actions { opacity: 1; }
 .course-preview-item { border-left: 3px solid var(--course-color); background: color-mix(in srgb, var(--course-color) 12%, #fcfbf8); padding-left: 6px; }
 .course-preview-item small { color: color-mix(in srgb, var(--course-color) 72%, #5e5851); }
 .course-preview-item em { color: color-mix(in srgb, var(--course-color) 82%, #4b4540); }
@@ -202,6 +204,7 @@
   .calendar-head { min-width: 620px; }
   .calendar-head-actions { flex-direction: row-reverse; }
   .week-grid { min-width: 620px; }
+  .week-item-actions { opacity: 1; }
   .calendar-expanded-backdrop { padding: 10px; }
   .expanded-calendar { max-height: calc(100vh - 20px); border-radius: 12px; }
   .expanded-calendar-head { padding: 16px 17px 13px; }
