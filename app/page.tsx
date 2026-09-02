@@ -1,6 +1,6 @@
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 
 type Task = { id: number; title: string; course: string; due: string; done: boolean; notes: string; gradeCategory: string; score: number | null };
 type GradeCategory = { name: string; weight: number; kind: 'exam' | 'task'; score: number | null };
@@ -8,6 +8,80 @@ type Course = { name: string; grading: GradeCategory[] };
 type GradeRow = { id: number; name: string; weight: string; kind: 'exam' | 'task' };
 type WeeklyItem = { id: number; weekday: number; title: string; time: string; kind: '课程' | '任务' };
 type Forecast = { target: number; scores: Record<string, number> };
+type DataBundle = { format: 'deadline-tracker'; version: 1; savedAt: string; tasks: Task[]; courses: Course[]; weeklyCourses: WeeklyItem[]; weeklyAssignments: WeeklyItem[]; forecasts: Record<string, Forecast> };
+type LocalWritableFile = { write(data: string): Promise<void>; close(): Promise<void> };
+type LocalFileHandle = {
+  name: string;
+  getFile(): Promise<File>;
+  createWritable(): Promise<LocalWritableFile>;
+  queryPermission?(descriptor?: { mode: 'readwrite' }): Promise<PermissionState>;
+  requestPermission?(descriptor?: { mode: 'readwrite' }): Promise<PermissionState>;
+};
+type FilePickerWindow = Window & {
+  showSaveFilePicker?: (options?: { suggestedName?: string; types?: Array<{ description: string; accept: Record<string, string[]> }> }) => Promise<LocalFileHandle>;
+  showOpenFilePicker?: (options?: { multiple?: boolean; types?: Array<{ description: string; accept: Record<string, string[]> }> }) => Promise<LocalFileHandle[]>;
+};
+
+const FILE_HANDLE_DB = 'deadline-tracker-file';
+const FILE_HANDLE_STORE = 'handles';
+const FILE_HANDLE_KEY = 'primary-data-file';
+const jsonPickerOptions = { types: [{ description: 'Deadline Tracker 数据', accept: { 'application/json': ['.json'] } }] };
+
+function openFileHandleDb() {
+  return new Promise<IDBDatabase>((resolve, reject) => {
+    const request = indexedDB.open(FILE_HANDLE_DB, 1);
+    request.onupgradeneeded = () => {
+      if (!request.result.objectStoreNames.contains(FILE_HANDLE_STORE)) request.result.createObjectStore(FILE_HANDLE_STORE);
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function rememberFileHandle(handle: LocalFileHandle) {
+  const db = await openFileHandleDb();
+  await new Promise<void>((resolve, reject) => {
+    const transaction = db.transaction(FILE_HANDLE_STORE, 'readwrite');
+    transaction.objectStore(FILE_HANDLE_STORE).put(handle, FILE_HANDLE_KEY);
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+  });
+  db.close();
+}
+
+async function recallFileHandle() {
+  const db = await openFileHandleDb();
+  const handle = await new Promise<LocalFileHandle | null>((resolve, reject) => {
+    const request = db.transaction(FILE_HANDLE_STORE, 'readonly').objectStore(FILE_HANDLE_STORE).get(FILE_HANDLE_KEY);
+    request.onsuccess = () => resolve((request.result as LocalFileHandle | undefined) ?? null);
+    request.onerror = () => reject(request.error);
+  });
+  db.close();
+  return handle;
+}
+
+async function writeDataFile(handle: LocalFileHandle, bundle: DataBundle) {
+  const writable = await handle.createWritable();
+  await writable.write(JSON.stringify(bundle, null, 2));
+  await writable.close();
+}
+
+async function readDataFile(handle: LocalFileHandle) {
+  const file = await handle.getFile();
+  if (!file.size) return null;
+  const raw = JSON.parse(await file.text()) as Partial<DataBundle>;
+  if (!Array.isArray(raw.tasks) || !Array.isArray(raw.courses)) throw new Error('这不是有效的 Deadline Tracker 数据文件。');
+  return {
+    format: 'deadline-tracker',
+    version: 1,
+    savedAt: typeof raw.savedAt === 'string' ? raw.savedAt : new Date().toISOString(),
+    tasks: raw.tasks.map((task) => ({ ...task, due: task.due.includes('T') ? task.due : `${task.due}T23:59`, notes: task.notes ?? '', gradeCategory: task.gradeCategory ?? '', score: typeof task.score === 'number' ? task.score : null })),
+    courses: raw.courses.map((course) => ({ name: course.name, grading: Array.isArray(course.grading) ? course.grading.map((category) => ({ ...category, kind: category.kind === 'exam' ? 'exam' as const : 'task' as const, score: typeof category.score === 'number' ? category.score : null })) : [] })),
+    weeklyCourses: Array.isArray(raw.weeklyCourses) ? raw.weeklyCourses : [],
+    weeklyAssignments: Array.isArray(raw.weeklyAssignments) ? raw.weeklyAssignments : [],
+    forecasts: raw.forecasts && typeof raw.forecasts === 'object' ? raw.forecasts : {},
+  } satisfies DataBundle;
+}
 
 const seed: Task[] = [
   { id: 1, title: 'Problem Set 3', course: 'EECS 280', due: '2026-09-02T23:59', done: false, notes: '完成第 5–12 题，提交 PDF，并检查代码风格。', gradeCategory: '', score: null },
@@ -25,6 +99,12 @@ export default function Page() {
   const [tasks, setTasks] = useState<Task[]>(seed);
   const [courses, setCourses] = useState<Course[]>(seedCourses);
   const [storageReady, setStorageReady] = useState(false);
+  const [dataMenuOpen, setDataMenuOpen] = useState(false);
+  const [fileHandle, setFileHandle] = useState<LocalFileHandle | null>(null);
+  const [fileReady, setFileReady] = useState(false);
+  const [fileStatus, setFileStatus] = useState('尚未连接本地数据文件');
+  const [fileStatusKind, setFileStatusKind] = useState<'idle' | 'saving' | 'saved' | 'warning' | 'error'>('idle');
+  const backupInputRef = useRef<HTMLInputElement>(null);
   const [filter, setFilter] = useState('全部');
   const [categoryFilter, setCategoryFilter] = useState('全部类别');
   const [formOpen, setFormOpen] = useState(false);
@@ -43,6 +123,7 @@ export default function Page() {
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [draft, setDraft] = useState<{ title: string; course: string; due: string; notes: string; gradeCategory: string; score: string }>({ title: '', course: seedCourses[0].name, due: '2026-09-01T23:59', notes: '', gradeCategory: '', score: '' });
   const [batchDraft, setBatchDraft] = useState({ title: 'Weekly Assignment', course: seedCourses[0].name, gradeCategory: '', weekday: '1', dueTime: '23:59', startDate: '2026-09-01', endDate: '2026-12-18', notes: '' });
+  const dataBundle = useMemo<DataBundle>(() => ({ format: 'deadline-tracker', version: 1, savedAt: new Date().toISOString(), tasks, courses, weeklyCourses, weeklyAssignments, forecasts }), [tasks, courses, weeklyCourses, weeklyAssignments, forecasts]);
 
   useEffect(() => {
     let loadedTasks = seed;
@@ -80,6 +161,167 @@ export default function Page() {
   useEffect(() => { if (storageReady) localStorage.setItem('deadline-weekly-courses', JSON.stringify(weeklyCourses)); }, [weeklyCourses, storageReady]);
   useEffect(() => { if (storageReady) localStorage.setItem('deadline-weekly-assignments', JSON.stringify(weeklyAssignments)); }, [weeklyAssignments, storageReady]);
   useEffect(() => { if (storageReady) localStorage.setItem('deadline-grade-forecasts', JSON.stringify(forecasts)); }, [forecasts, storageReady]);
+
+  useEffect(() => {
+    if (!storageReady || !('indexedDB' in window)) return;
+    let cancelled = false;
+    void recallFileHandle().then(async (handle) => {
+      if (!handle || cancelled) return;
+      setFileHandle(handle);
+      const permission = handle.queryPermission ? await handle.queryPermission({ mode: 'readwrite' }) : 'prompt';
+      if (cancelled) return;
+      if (permission !== 'granted') {
+        setFileStatus(`${handle.name} 需要重新授权`);
+        setFileStatusKind('warning');
+        return;
+      }
+      const bundle = await readDataFile(handle);
+      if (cancelled) return;
+      if (bundle) applyDataBundle(bundle);
+      setFileReady(true);
+      setFileStatus(`已连接 ${handle.name}`);
+      setFileStatusKind('saved');
+    }).catch(() => {
+      if (!cancelled) {
+        setFileStatus('无法恢复上次连接，请重新选择文件');
+        setFileStatusKind('warning');
+      }
+    });
+    return () => { cancelled = true; };
+  }, [storageReady]);
+
+  useEffect(() => {
+    if (!storageReady || !fileHandle || !fileReady) return;
+    const timer = window.setTimeout(() => {
+      setFileStatus('正在保存到本地文件…');
+      setFileStatusKind('saving');
+      void writeDataFile(fileHandle, dataBundle).then(() => {
+        setFileStatus(`已自动保存 · ${new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`);
+        setFileStatusKind('saved');
+      }).catch(() => {
+        setFileReady(false);
+        setFileStatus('自动保存失败，请重新授权');
+        setFileStatusKind('error');
+      });
+    }, 500);
+    return () => window.clearTimeout(timer);
+  }, [dataBundle, fileHandle, fileReady, storageReady]);
+
+  function applyDataBundle(bundle: DataBundle) {
+    setTasks(bundle.tasks);
+    setCourses(bundle.courses);
+    setWeeklyCourses(bundle.weeklyCourses);
+    setWeeklyAssignments(bundle.weeklyAssignments);
+    setForecasts(bundle.forecasts);
+    setSelectedTask(null);
+    setFilter('全部');
+    setCategoryFilter('全部类别');
+    setDraft((current) => ({ ...current, course: bundle.courses[0]?.name ?? '' }));
+    setBatchDraft((current) => ({ ...current, course: bundle.courses[0]?.name ?? '' }));
+  }
+
+  function pickerWindow() {
+    return window as unknown as FilePickerWindow;
+  }
+
+  async function connectAndSaveFile() {
+    const picker = pickerWindow();
+    if (!picker.showSaveFilePicker) {
+      setFileStatus('当前浏览器不支持直接写入文件，请使用导出备份');
+      setFileStatusKind('warning');
+      return;
+    }
+    try {
+      const handle = await picker.showSaveFilePicker({ suggestedName: 'assignment-tracker-data.json', ...jsonPickerOptions });
+      await writeDataFile(handle, dataBundle);
+      await rememberFileHandle(handle);
+      setFileHandle(handle);
+      setFileReady(true);
+      setFileStatus(`已连接 ${handle.name}`);
+      setFileStatusKind('saved');
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === 'AbortError')) {
+        setFileStatus('连接文件失败，请重试');
+        setFileStatusKind('error');
+      }
+    }
+  }
+
+  async function restoreFromLocalFile() {
+    const picker = pickerWindow();
+    if (!picker.showOpenFilePicker) {
+      backupInputRef.current?.click();
+      return;
+    }
+    try {
+      const [handle] = await picker.showOpenFilePicker({ multiple: false, ...jsonPickerOptions });
+      if (!handle) return;
+      const bundle = await readDataFile(handle);
+      if (!bundle) throw new Error('数据文件为空。');
+      const permission = handle.requestPermission ? await handle.requestPermission({ mode: 'readwrite' }) : 'prompt';
+      applyDataBundle(bundle);
+      setFileHandle(handle);
+      setFileReady(permission === 'granted');
+      if (permission === 'granted') await rememberFileHandle(handle);
+      setFileStatus(permission === 'granted' ? `已恢复并连接 ${handle.name}` : `已恢复 ${handle.name}，但没有自动保存权限`);
+      setFileStatusKind(permission === 'granted' ? 'saved' : 'warning');
+    } catch (error) {
+      if (!(error instanceof DOMException && error.name === 'AbortError')) {
+        setFileStatus(error instanceof Error ? error.message : '读取数据文件失败');
+        setFileStatusKind('error');
+      }
+    }
+  }
+
+  async function reauthorizeFile() {
+    if (!fileHandle) return;
+    try {
+      const permission = fileHandle.requestPermission ? await fileHandle.requestPermission({ mode: 'readwrite' }) : 'prompt';
+      if (permission !== 'granted') {
+        setFileStatus('没有获得文件读写权限');
+        setFileStatusKind('warning');
+        return;
+      }
+      const bundle = await readDataFile(fileHandle);
+      if (bundle) applyDataBundle(bundle);
+      await rememberFileHandle(fileHandle);
+      setFileReady(true);
+      setFileStatus(`已重新连接 ${fileHandle.name}`);
+      setFileStatusKind('saved');
+    } catch {
+      setFileStatus('重新授权失败，请重新选择文件');
+      setFileStatusKind('error');
+    }
+  }
+
+  function exportBackup() {
+    const url = URL.createObjectURL(new Blob([JSON.stringify(dataBundle, null, 2)], { type: 'application/json' }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `assignment-tracker-backup-${new Date().toISOString().slice(0, 10)}.json`;
+    link.click();
+    URL.revokeObjectURL(url);
+    setFileStatus('备份文件已导出');
+    setFileStatusKind('saved');
+  }
+
+  async function importBackup(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    try {
+      const raw = JSON.parse(await file.text()) as Partial<DataBundle>;
+      if (!Array.isArray(raw.tasks) || !Array.isArray(raw.courses)) throw new Error('这不是有效的 Deadline Tracker 备份。');
+      const bundle = await readDataFile({ name: file.name, getFile: async () => file, createWritable: async () => { throw new Error('只读文件'); } });
+      if (!bundle) throw new Error('备份文件为空。');
+      applyDataBundle(bundle);
+      setFileStatus(`已导入 ${file.name}；连接数据文件后可自动保存`);
+      setFileStatusKind('warning');
+    } catch (error) {
+      setFileStatus(error instanceof Error ? error.message : '导入备份失败');
+      setFileStatusKind('error');
+    }
+  }
 
   const active = tasks.filter((task) => !task.done);
   const shown = tasks
@@ -300,7 +542,23 @@ export default function Page() {
     <header>
       <div className="brand"><span className="mark">D</span><span>deadline</span></div>
       <div className="date">2026 年 8 月 31 日 · 星期一</div>
-      <div className="header-actions"><button className="secondary" onClick={openCourseForm}>＋ 添加课程</button><button className="secondary" onClick={openBatchForm}>＋ 批量添加</button><button className="add" onClick={openTaskForm}>＋ 添加作业</button></div>
+      <div className="header-actions">
+        <div className="data-menu">
+          <button type="button" className={`data-menu-trigger ${fileReady ? 'connected' : ''}`} aria-expanded={dataMenuOpen} aria-controls="local-data-panel" onClick={() => setDataMenuOpen(!dataMenuOpen)}>数据<span aria-hidden="true">{dataMenuOpen ? '▴' : '▾'}</span></button>
+          {dataMenuOpen && <section id="local-data-panel" className="data-menu-panel" aria-label="本地数据管理">
+            <div className={`data-file-status ${fileStatusKind}`} aria-live="polite"><span aria-hidden="true" /><div><strong>{fileReady ? '本地文件已连接' : '本地数据文件'}</strong><p>{fileStatus}</p></div></div>
+            <div className="data-menu-actions">
+              {fileHandle && !fileReady && <button type="button" className="data-action primary" onClick={reauthorizeFile}>重新授权并读取</button>}
+              <button type="button" className="data-action" onClick={connectAndSaveFile}>连接并保存当前数据</button>
+              <button type="button" className="data-action" onClick={restoreFromLocalFile}>从本地文件恢复</button>
+            </div>
+            <div className="data-backup-actions"><button type="button" onClick={exportBackup}>导出备份</button><button type="button" onClick={() => backupInputRef.current?.click()}>导入备份</button></div>
+            <input ref={backupInputRef} className="data-file-input" type="file" accept="application/json,.json" onChange={importBackup} />
+            <small>清除浏览器记录不会删除电脑上的数据文件；之后重新选择同一文件即可恢复。</small>
+          </section>}
+        </div>
+        <button className="secondary" onClick={openCourseForm}>＋ 添加课程</button><button className="secondary" onClick={openBatchForm}>＋ 批量添加</button><button className="add" onClick={openTaskForm}>＋ 添加作业</button>
+      </div>
     </header>
     <section className="overview-grid"><div className="overview-left"><section className="urgent-panel"><div><p className="eyebrow">24 小时内</p><h2>即将到期</h2></div>{urgent.length ? <div className="urgent-list">{urgent.map((task) => <button key={task.id} className="urgent-item" onClick={() => setSelectedTask(task)}><span>{task.title}</span><small>{formatDate(task.due)}</small></button>)}</div> : <p className="urgent-empty">未来 24 小时没有截止事项。</p>}</section><section className="metrics"><article><span>待完成</span><strong>{stats.total}</strong><small>项作业</small></article><article className="accent"><span>未来 7 天</span><strong>{stats.soon}</strong><small>项需要关注</small></article></section></div><section className="calendar-panel" aria-label="每周日历"><div className="calendar-head"><p className="eyebrow">日历</p><div className="calendar-tabs"><button className={calendarMode === 'course' ? 'selected' : ''} onClick={() => setCalendarMode('course')}>每周课程</button><button className={calendarMode === 'task' ? 'selected' : ''} onClick={() => setCalendarMode('task')}>每周作业</button></div></div><div className="week-grid">{weekDays.map((day) => <section className={`week-day ${today === day.value ? 'today' : ''}`} key={day.value}><div className="week-day-head"><span>{day.label}</span>{today === day.value && <small>今天</small>}</div><div className="week-items">{calendarItems.filter((item) => item.weekday === day.value).map((item) => <div className="week-item" key={item.id}><button onClick={() => deleteCalendarItem(item.id)} aria-label={`删除 ${item.title}`} title="删除">×</button>{item.time && <small>{item.time}</small>}<span>{item.title}</span>{calendarMode === 'course' && <em>{item.kind}</em>}</div>)}</div><button className="week-add" onClick={() => openCalendarForm(day.value)}>＋</button></section>)}</div></section></section>
     <section className="workspace">
