@@ -19,8 +19,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       GITHUB_ACTIONS: 'true'
-      VITE_SUPABASE_URL: ${{ secrets.VITE_SUPABASE_URL }}
-      VITE_SUPABASE_PUBLISHABLE_KEY: ${{ secrets.VITE_SUPABASE_PUBLISHABLE_KEY }}
     steps:
       - uses: actions/checkout@v4
 
