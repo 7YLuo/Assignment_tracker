@@ -2,6 +2,7 @@
 
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Session } from '@supabase/supabase-js';
+import { fetchMockCanvasImport, mockCanvasAssignmentCount, mockCanvasCourses } from './canvas-import';
 import { supabase, supabaseConfigured } from './supabase';
 
 type DataSource = 'manual' | 'mock' | 'canvas';
@@ -131,6 +132,9 @@ export default function Page() {
   const [authPassword, setAuthPassword] = useState('');
   const [authBusy, setAuthBusy] = useState(false);
   const [authMessage, setAuthMessage] = useState('');
+  const [canvasImportOpen, setCanvasImportOpen] = useState(false);
+  const [canvasImportBusy, setCanvasImportBusy] = useState(false);
+  const [canvasImportMessage, setCanvasImportMessage] = useState('');
   const [cloudStatus, setCloudStatus] = useState('正在连接云端…');
   const [cloudStatusKind, setCloudStatusKind] = useState<'loading' | 'saving' | 'saved' | 'error'>('loading');
   const hydratedUserRef = useRef<string | null>(null);
@@ -296,6 +300,78 @@ export default function Page() {
   async function signOut() {
     if (!supabase) return;
     await supabase.auth.signOut();
+  }
+
+  async function runMockCanvasImport() {
+    setCanvasImportBusy(true);
+    setCanvasImportMessage('');
+    try {
+      const payload = await fetchMockCanvasImport();
+      const courseNameById = new Map(payload.courses.map((course) => {
+        const existing = courses.find((current) => current.externalId === course.externalId || current.name.toLocaleLowerCase() === course.name.toLocaleLowerCase());
+        return [course.externalId, existing?.name ?? course.name];
+      }));
+      setCourses((current) => {
+        const next = [...current];
+        for (const importedCourse of payload.courses) {
+          const existingIndex = next.findIndex((course) => course.externalId === importedCourse.externalId || course.name.toLocaleLowerCase() === importedCourse.name.toLocaleLowerCase());
+          const importedGrading = importedCourse.grading.map((category) => ({ ...category, score: null }));
+          if (existingIndex === -1) {
+            next.push({ name: importedCourse.name, grading: importedGrading, source: 'mock', externalId: importedCourse.externalId });
+          } else {
+            const existing = next[existingIndex];
+            next[existingIndex] = {
+              ...existing,
+              source: 'mock',
+              externalId: importedCourse.externalId,
+              grading: existing.grading.length ? existing.grading : importedGrading,
+            };
+          }
+        }
+        return next;
+      });
+      setTasks((current) => {
+        const next = [...current];
+        for (const [index, assignment] of payload.assignments.entries()) {
+          const courseName = courseNameById.get(assignment.courseExternalId);
+          if (!courseName) continue;
+          const existingIndex = next.findIndex((task) => task.externalId === assignment.externalId);
+          if (existingIndex === -1) {
+            next.push({
+              id: Date.now() + index,
+              title: assignment.title,
+              course: courseName,
+              due: assignment.due,
+              done: assignment.submitted,
+              notes: assignment.notes,
+              gradeCategory: assignment.gradeCategory,
+              score: assignment.score,
+              source: 'mock',
+              externalId: assignment.externalId,
+            });
+          } else {
+            const existing = next[existingIndex];
+            next[existingIndex] = {
+              ...existing,
+              title: assignment.title,
+              course: courseName,
+              due: assignment.due,
+              done: assignment.submitted,
+              notes: existing.notes || assignment.notes,
+              gradeCategory: assignment.gradeCategory,
+              score: assignment.score ?? existing.score,
+              source: 'mock',
+            };
+          }
+        }
+        return next;
+      });
+      setCanvasImportMessage(`同步完成：${payload.courses.length} 门课程，${payload.assignments.length} 项作业。重复同步不会创建副本。`);
+    } catch (error) {
+      setCanvasImportMessage(error instanceof Error ? error.message : 'Canvas 模拟同步失败，请重试。');
+    } finally {
+      setCanvasImportBusy(false);
+    }
   }
 
   const active = tasks.filter((task) => !task.done);
@@ -590,7 +666,7 @@ export default function Page() {
       <div className="auth-brand"><span className="mark">D</span><strong>deadline</strong></div>
       <div><p className="eyebrow">Cloud setup</p><h1>云端后端尚未连接</h1></div>
       <p>新版已经迁移到 Supabase，但本机还没有项目地址和浏览器可用的 publishable key。完成一次配置后，课程、作业、课表和成绩会按账户自动保存。</p>
-      <ol className="setup-steps"><li>在 Supabase 创建项目并运行仓库中的数据库迁移 SQL。</li><li>复制项目 URL 和 publishable key 到 <code>.env.local</code>。</li><li>重新启动开发服务器；部署时把同名变量添加为 GitHub Actions secrets。</li></ol>
+      <ol className="setup-steps"><li>在 Supabase 创建项目并运行仓库中的数据库迁移 SQL。</li><li>复制项目 URL 和 publishable key 到 <code>.env.local</code>。</li><li>重新启动开发服务器；生产环境使用 <code>.env.production</code> 中的浏览器公开配置。</li></ol>
       <small>完整步骤见项目根目录的 SUPABASE_SETUP.md。不要把 service role key 放进前端。</small>
     </section>
   </main>;
@@ -623,7 +699,7 @@ export default function Page() {
       <div className="header-actions">
         <div className={`cloud-status ${cloudStatusKind}`} title={session.user.email ?? '已登录'} aria-live="polite"><span aria-hidden="true" /><div><strong>{cloudStatus}</strong><small>{session.user.email}</small></div></div>
         <button type="button" className="account-signout" onClick={signOut}>退出</button>
-        <button className="secondary" onClick={openCourseForm}>＋ 添加课程</button><button className="secondary" onClick={openBatchForm}>＋ 批量添加</button><button className="add" onClick={openTaskForm}>＋ 添加作业</button>
+        <button className="secondary canvas-sync-trigger" onClick={() => { setCanvasImportMessage(''); setCanvasImportOpen(true); }}>↻ Canvas</button><button className="secondary" onClick={openCourseForm}>＋ 添加课程</button><button className="secondary" onClick={openBatchForm}>＋ 批量添加</button><button className="add" onClick={openTaskForm}>＋ 添加作业</button>
       </div>
     </header>
     <section className="overview-grid">
@@ -644,10 +720,19 @@ export default function Page() {
       {selectedCourse && selectedCourse.grading.length > 0 && <><section className="course-grade-panel"><div className="course-grade-total"><span>当前课程成绩</span><strong>{currentCourseGrade === null ? '—' : `${currentCourseGrade.toFixed(1)}%`}</strong><small>按已有成绩计算</small></div><div className="category-averages">{categoryStats.map((category) => <div key={category.name}><span>{category.name}<small>{category.kind === 'exam' ? '考试' : '任务'} · {category.weight}% · {category.gradedCount} 项已评分</small></span>{category.kind === 'exam' ? <div className="exam-score"><input aria-label={`${category.name} 考试成绩`} type="number" min="0" max="100" step="0.1" value={category.score ?? ''} onChange={(event) => setExamScore(selectedCourse.name, category.name, event.target.value)} placeholder="输入成绩" /><span>%</span></div> : <strong>{category.average === null ? '—' : `${category.average.toFixed(1)}%`}</strong>}</div>)}</div></section><section className="grade-planner"><div className="planner-heading"><div><p className="eyebrow">成绩预测</p><h3>目标最终分数</h3></div><div className="target-score"><input aria-label="目标最终分数" type="range" min="0" max="100" step="0.1" value={forecast.target} onChange={(event) => updateForecast(selectedCourse.name, (current) => ({ ...current, target: Number(event.target.value) }))} /><strong>{forecast.target.toFixed(1)}%</strong></div></div><div className="planner-summary"><span>按预测计算</span><strong>{projectedFinal === null ? '—' : `${projectedFinal.toFixed(1)}%`}</strong><small className={projectedFinal !== null && projectedFinal >= forecast.target ? 'on-track' : ''}>{projectedFinal !== null && projectedFinal >= forecast.target ? '预计达到目标' : '还需要提升预测分数'}</small></div>{forecastItems.length ? <div className="forecast-items">{forecastItems.map((item) => <label key={item.key}><span><strong>{item.label}</strong><small>{item.description}</small></span><input aria-label={`${item.label} 预测成绩`} type="range" min="0" max="100" step="0.1" value={item.score} onChange={(event) => updateForecast(selectedCourse.name, (current) => ({ ...current, scores: { ...current.scores, [item.key]: Number(event.target.value) } }))} /><output>{item.score.toFixed(1)}%</output></label>)}</div> : <p className="planner-empty">没有等待评分的考试或作业；添加项目后可在这里预测成绩。</p>}</section></>}
       {shown.length ? shown.map((task) => <article className={`task ${task.done ? 'done' : ''}`} key={task.id}>
         <button className="check" aria-label={`标记 ${task.title} 完成`} onClick={() => setTasks(tasks.map((item) => item.id === task.id ? { ...item, done: !item.done } : item))}>{task.done && '✓'}</button>
-        <button className="task-open" onClick={() => setSelectedTask(task)}><h3>{task.title}</h3><p>{task.course}{task.gradeCategory && <><b>·</b><span className="grade-category">{task.gradeCategory}</span></>} <b>·</b> {formatDate(task.due)}{task.score !== null && <><b>·</b><span className="task-score">{task.score}%</span></>}{task.notes && <><b>·</b><span className="has-notes">有备注</span></>}</p></button>
+        <button className="task-open" onClick={() => setSelectedTask(task)}><h3>{task.title}</h3><p>{task.course}{task.gradeCategory && <><b>·</b><span className="grade-category">{task.gradeCategory}</span></>} <b>·</b> {formatDate(task.due)}{task.score !== null && <><b>·</b><span className="task-score">{task.score}%</span></>}{task.notes && <><b>·</b><span className="has-notes">有备注</span></>}{task.source === 'mock' && <><b>·</b><span className="canvas-source">Canvas 模拟</span></>}</p></button>
         <button className="delete" aria-label={`删除 ${task.title}`} onClick={() => setTasks(tasks.filter((item) => item.id !== task.id))}>×</button>
       </article>) : <div className="empty">这个分类还没有作业。</div>}</div>
     </section>
+
+    {canvasImportOpen && <div className="modal-backdrop" onMouseDown={() => !canvasImportBusy && setCanvasImportOpen(false)}><section className="modal canvas-import-modal" role="dialog" aria-modal="true" aria-labelledby="canvas-import-title" onMouseDown={(event) => event.stopPropagation()}>
+      <div className="canvas-import-heading"><span className="canvas-mark" aria-hidden="true">C</span><div><p className="eyebrow">Canvas import</p><h2 id="canvas-import-title">模拟 Canvas 同步</h2></div></div>
+      <div className="canvas-demo-notice"><strong>演示模式</strong><p>当前不会连接 U-M Canvas，也不需要 API 凭证。这里使用与未来后端接口相同的数据结构，模拟一次成功同步。</p></div>
+      <div className="canvas-preview"><div className="canvas-preview-summary"><span><strong>{mockCanvasCourses.length}</strong> 门课程</span><span><strong>{mockCanvasAssignmentCount}</strong> 项作业</span></div>{mockCanvasCourses.map((course) => <article key={course.externalId}><div><strong>{course.name}</strong><small>{course.grading.length} 个评分类别</small></div><span>待导入</span></article>)}</div>
+      {canvasImportMessage && <p className="canvas-import-result" role="status">{canvasImportMessage}</p>}
+      <small className="canvas-import-footnote">再次同步会按 Canvas ID 更新已有记录，不会重复创建。手动添加和编辑功能保持不变。</small>
+      <div className="actions"><button type="button" className="plain" disabled={canvasImportBusy} onClick={() => setCanvasImportOpen(false)}>关闭</button><button type="button" className="add" disabled={canvasImportBusy} onClick={runMockCanvasImport}>{canvasImportBusy ? '正在模拟同步…' : canvasImportMessage ? '再次同步' : '运行模拟同步'}</button></div>
+    </section></div>}
 
     {formOpen && <div className="modal-backdrop" onMouseDown={() => setFormOpen(false)}><form className="modal" onSubmit={saveTask} onMouseDown={(event) => event.stopPropagation()}>
       <div><p className="eyebrow">新的截止日期</p><h2>添加作业</h2></div>
@@ -699,7 +784,7 @@ export default function Page() {
       <label>课程名称<input autoFocus required value={courseName} onChange={(event) => { setCourseName(event.target.value); setGradeError(''); }} placeholder="例如：History 201" /></label>
       <div className="grading-editor"><div className="grading-head"><span>评分分布</span><strong className={gradeRows.some((row) => row.name || row.weight) && Math.abs(gradeTotal - 100) > 0.001 ? 'total-warning' : ''}>合计 {gradeTotal}%</strong></div>{gradeRows.map((row) => <div className="grade-row" key={row.id}><input aria-label="评分项目名称" value={row.name} onChange={(event) => { setGradeRows(gradeRows.map((item) => item.id === row.id ? { ...item, name: event.target.value } : item)); setGradeError(''); }} placeholder="例如：Midterm" /><select aria-label="评分项目类型" value={row.kind} onChange={(event) => setGradeRows(gradeRows.map((item) => item.id === row.id ? { ...item, kind: event.target.value as 'exam' | 'task' } : item))}><option value="exam">考试</option><option value="task">任务</option></select><div className="weight-input"><input aria-label="评分比例" type="number" min="0.01" max="100" step="0.01" value={row.weight} onChange={(event) => { setGradeRows(gradeRows.map((item) => item.id === row.id ? { ...item, weight: event.target.value } : item)); setGradeError(''); }} placeholder="50" /><span>%</span></div><button type="button" aria-label="删除评分项目" onClick={() => setGradeRows(gradeRows.filter((item) => item.id !== row.id))}>×</button></div>)}<button type="button" className="add-grade" onClick={() => setGradeRows([...gradeRows, { id: Date.now(), name: '', weight: '', kind: 'task' }])}>＋ 添加评分项目</button>{gradeError && <p className="form-error">{gradeError}</p>}</div>
       <button className="add course-save">{editingCourse ? '保存课程修改' : '保存课程'}</button>
-      {courses.length > 0 && <div className="course-list"><p>已有课程</p>{courses.map((course) => <div className="course-row" key={course.name}><div className="course-info"><span><strong>{course.name}</strong><small>{tasks.filter((task) => task.course === course.name).length} 项作业</small></span><p>{course.grading.length ? course.grading.map((item) => `${item.name}（${item.kind === 'exam' ? '考试' : '任务'}） ${item.weight}%`).join(' · ') : '尚未设置评分分布'}</p></div><div className="course-actions"><button type="button" className="course-edit" disabled={course.name === UNASSIGNED} onClick={() => editCourse(course)}>编辑课程</button><button type="button" className="course-delete" disabled={course.name === UNASSIGNED} title={course.name === UNASSIGNED ? '系统分类不能删除' : `删除 ${course.name}`} onClick={() => deleteCourse(course.name)}>{course.name === UNASSIGNED ? '保留' : '删除'}</button></div></div>)}</div>}
+      {courses.length > 0 && <div className="course-list"><p>已有课程</p>{courses.map((course) => <div className="course-row" key={course.name}><div className="course-info"><span><strong>{course.name}</strong><small>{tasks.filter((task) => task.course === course.name).length} 项作业</small>{course.source === 'mock' && <small className="canvas-course-source">Canvas 模拟</small>}</span><p>{course.grading.length ? course.grading.map((item) => `${item.name}（${item.kind === 'exam' ? '考试' : '任务'}） ${item.weight}%`).join(' · ') : '尚未设置评分分布'}</p></div><div className="course-actions"><button type="button" className="course-edit" disabled={course.name === UNASSIGNED} onClick={() => editCourse(course)}>编辑课程</button><button type="button" className="course-delete" disabled={course.name === UNASSIGNED} title={course.name === UNASSIGNED ? '系统分类不能删除' : `删除 ${course.name}`} onClick={() => deleteCourse(course.name)}>{course.name === UNASSIGNED ? '保留' : '删除'}</button></div></div>)}</div>}
       <div className="actions"><button type="button" className="plain" onClick={closeCourseForm}>完成</button></div>
     </form></div>}
 
