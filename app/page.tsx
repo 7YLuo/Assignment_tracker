@@ -1,31 +1,17 @@
 'use client';
 
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import type { Session } from '@supabase/supabase-js';
+import { supabase, supabaseConfigured } from './supabase';
 
-type Task = { id: number; title: string; course: string; due: string; done: boolean; notes: string; gradeCategory: string; score: number | null };
+type DataSource = 'manual' | 'mock' | 'canvas';
+type Task = { id: number; title: string; course: string; due: string; done: boolean; notes: string; gradeCategory: string; score: number | null; source?: DataSource; externalId?: string | null };
 type GradeCategory = { name: string; weight: number; kind: 'exam' | 'task'; score: number | null };
-type Course = { name: string; grading: GradeCategory[] };
+type Course = { name: string; grading: GradeCategory[]; source?: DataSource; externalId?: string | null };
 type GradeRow = { id: number; name: string; weight: string; kind: 'exam' | 'task' };
 type WeeklyItem = { id: number; weekday: number; title: string; time: string; endTime?: string; kind: '课程' | '任务'; course?: string; location?: string; color?: string };
 type Forecast = { target: number; scores: Record<string, number> };
-type DataBundle = { format: 'deadline-tracker'; version: 1; savedAt: string; tasks: Task[]; courses: Course[]; weeklyCourses: WeeklyItem[]; weeklyAssignments: WeeklyItem[]; forecasts: Record<string, Forecast> };
-type LocalWritableFile = { write(data: string): Promise<void>; close(): Promise<void> };
-type LocalFileHandle = {
-  name: string;
-  getFile(): Promise<File>;
-  createWritable(): Promise<LocalWritableFile>;
-  queryPermission?(descriptor?: { mode: 'readwrite' }): Promise<PermissionState>;
-  requestPermission?(descriptor?: { mode: 'readwrite' }): Promise<PermissionState>;
-};
-type FilePickerWindow = Window & {
-  showSaveFilePicker?: (options?: { suggestedName?: string; types?: Array<{ description: string; accept: Record<string, string[]> }> }) => Promise<LocalFileHandle>;
-  showOpenFilePicker?: (options?: { multiple?: boolean; types?: Array<{ description: string; accept: Record<string, string[]> }> }) => Promise<LocalFileHandle[]>;
-};
-
-const FILE_HANDLE_DB = 'deadline-tracker-file';
-const FILE_HANDLE_STORE = 'handles';
-const FILE_HANDLE_KEY = 'primary-data-file';
-const jsonPickerOptions = { types: [{ description: 'Deadline Tracker 数据', accept: { 'application/json': ['.json'] } }] };
+type DataBundle = { format: 'deadline-tracker'; version: 2; savedAt: string; tasks: Task[]; courses: Course[]; weeklyCourses: WeeklyItem[]; weeklyAssignments: WeeklyItem[]; forecasts: Record<string, Forecast> };
 const COURSE_COLORS = ['#d76648', '#5579a6', '#63856b', '#9a68a0', '#c28a35', '#4f8c91', '#b85f78', '#766ab0', '#8b7657', '#4c8273', '#a85e42', '#6b7fba'];
 
 function timeToMinutes(time: string) {
@@ -73,84 +59,81 @@ function normalizeWeeklyItems(value: unknown) {
   });
 }
 
-function openFileHandleDb() {
-  return new Promise<IDBDatabase>((resolve, reject) => {
-    const request = indexedDB.open(FILE_HANDLE_DB, 1);
-    request.onupgradeneeded = () => {
-      if (!request.result.objectStoreNames.contains(FILE_HANDLE_STORE)) request.result.createObjectStore(FILE_HANDLE_STORE);
-    };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-}
-
-async function rememberFileHandle(handle: LocalFileHandle) {
-  const db = await openFileHandleDb();
-  await new Promise<void>((resolve, reject) => {
-    const transaction = db.transaction(FILE_HANDLE_STORE, 'readwrite');
-    transaction.objectStore(FILE_HANDLE_STORE).put(handle, FILE_HANDLE_KEY);
-    transaction.oncomplete = () => resolve();
-    transaction.onerror = () => reject(transaction.error);
-  });
-  db.close();
-}
-
-async function recallFileHandle() {
-  const db = await openFileHandleDb();
-  const handle = await new Promise<LocalFileHandle | null>((resolve, reject) => {
-    const request = db.transaction(FILE_HANDLE_STORE, 'readonly').objectStore(FILE_HANDLE_STORE).get(FILE_HANDLE_KEY);
-    request.onsuccess = () => resolve((request.result as LocalFileHandle | undefined) ?? null);
-    request.onerror = () => reject(request.error);
-  });
-  db.close();
-  return handle;
-}
-
-async function writeDataFile(handle: LocalFileHandle, bundle: DataBundle) {
-  const writable = await handle.createWritable();
-  await writable.write(JSON.stringify(bundle, null, 2));
-  await writable.close();
-}
-
-async function readDataFile(handle: LocalFileHandle) {
-  const file = await handle.getFile();
-  if (!file.size) return null;
-  const raw = JSON.parse(await file.text()) as Partial<DataBundle>;
-  if (!Array.isArray(raw.tasks) || !Array.isArray(raw.courses)) throw new Error('这不是有效的 Deadline Tracker 数据文件。');
-  return {
-    format: 'deadline-tracker',
-    version: 1,
-    savedAt: typeof raw.savedAt === 'string' ? raw.savedAt : new Date().toISOString(),
-    tasks: raw.tasks.map((task) => ({ ...task, due: task.due.includes('T') ? task.due : `${task.due}T23:59`, notes: task.notes ?? '', gradeCategory: task.gradeCategory ?? '', score: typeof task.score === 'number' ? task.score : null })),
-    courses: raw.courses.map((course) => ({ name: course.name, grading: Array.isArray(course.grading) ? course.grading.map((category) => ({ ...category, kind: category.kind === 'exam' ? 'exam' as const : 'task' as const, score: typeof category.score === 'number' ? category.score : null })) : [] })),
-    weeklyCourses: normalizeWeeklyItems(raw.weeklyCourses),
-    weeklyAssignments: normalizeWeeklyItems(raw.weeklyAssignments),
-    forecasts: raw.forecasts && typeof raw.forecasts === 'object' ? raw.forecasts : {},
-  } satisfies DataBundle;
-}
-
-const seed: Task[] = [
-  { id: 1, title: 'Problem Set 3', course: 'EECS 280', due: '2026-09-02T23:59', done: false, notes: '完成第 5–12 题，提交 PDF，并检查代码风格。', gradeCategory: '', score: null },
-  { id: 2, title: 'Reading response', course: 'English 325', due: '2026-09-04T17:00', done: false, notes: '围绕本周阅读材料写 500 字回应。', gradeCategory: '', score: null },
-  { id: 3, title: 'Lab report', course: 'Chemistry 130', due: '2026-09-07T14:30', done: false, notes: '附上实验数据表和误差分析。', gradeCategory: '', score: null },
-  { id: 4, title: 'Chapter 2 notes', course: 'Math 214', due: '2026-09-10T09:00', done: true, notes: '', gradeCategory: '', score: null },
-];
-const seedCourses: Course[] = [...new Set(seed.map((task) => task.course))].map((name) => ({ name, grading: [] }));
+const seed: Task[] = [];
+const seedCourses: Course[] = [];
 const UNASSIGNED = '未分类';
 const formatDate = (date: string) => new Intl.DateTimeFormat('zh-CN', { month: 'short', day: 'numeric', weekday: 'short', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(date));
 const blankGradeRows = (): GradeRow[] => [{ id: Date.now(), name: '', weight: '', kind: 'task' }, { id: Date.now() + 1, name: '', weight: '', kind: 'task' }];
 const taskCategoriesFor = (course: Course | undefined) => (course?.grading ?? []).filter((category) => category.kind === 'task');
 
+function normalizeDataBundle(value: unknown): DataBundle {
+  const raw = value && typeof value === 'object' ? value as Partial<DataBundle> : {};
+  const tasks = Array.isArray(raw.tasks) ? raw.tasks.map((task) => ({
+    ...task,
+    due: typeof task.due === 'string' && task.due.includes('T') ? task.due : `${task.due || new Date().toISOString().slice(0, 10)}T23:59`,
+    notes: task.notes ?? '',
+    gradeCategory: task.gradeCategory ?? '',
+    score: typeof task.score === 'number' ? task.score : null,
+    source: task.source === 'canvas' || task.source === 'mock' ? task.source : 'manual' as const,
+    externalId: typeof task.externalId === 'string' ? task.externalId : null,
+  })) : [];
+  const courses = Array.isArray(raw.courses) ? (raw.courses as Array<string | Course>).map((course) => typeof course === 'string'
+    ? { name: course, grading: [], source: 'manual' as const, externalId: null }
+    : {
+        name: course.name,
+        grading: Array.isArray(course.grading) ? course.grading.map((category) => ({ ...category, kind: category.kind === 'exam' ? 'exam' as const : 'task' as const, score: typeof category.score === 'number' ? category.score : null })) : [],
+        source: course.source === 'canvas' || course.source === 'mock' ? course.source : 'manual' as const,
+        externalId: typeof course.externalId === 'string' ? course.externalId : null,
+      }) : [];
+  for (const name of tasks.map((task) => task.course)) {
+    if (name && !courses.some((course) => course.name === name)) courses.push({ name, grading: [], source: 'manual', externalId: null });
+  }
+  return {
+    format: 'deadline-tracker',
+    version: 2,
+    savedAt: typeof raw.savedAt === 'string' ? raw.savedAt : new Date().toISOString(),
+    tasks,
+    courses,
+    weeklyCourses: normalizeWeeklyItems(raw.weeklyCourses),
+    weeklyAssignments: normalizeWeeklyItems(raw.weeklyAssignments),
+    forecasts: raw.forecasts && typeof raw.forecasts === 'object' ? raw.forecasts : {},
+  };
+}
+
+function readLegacyBrowserData(): DataBundle | null {
+  const savedTasks = localStorage.getItem('deadline-tasks');
+  const savedCourses = localStorage.getItem('deadline-courses');
+  const savedWeeklyCourses = localStorage.getItem('deadline-weekly-courses');
+  const savedWeeklyAssignments = localStorage.getItem('deadline-weekly-assignments');
+  const savedForecasts = localStorage.getItem('deadline-grade-forecasts');
+  if (![savedTasks, savedCourses, savedWeeklyCourses, savedWeeklyAssignments, savedForecasts].some(Boolean)) return null;
+  try {
+    return normalizeDataBundle({
+      tasks: savedTasks ? JSON.parse(savedTasks) : [],
+      courses: savedCourses ? JSON.parse(savedCourses) : [],
+      weeklyCourses: savedWeeklyCourses ? JSON.parse(savedWeeklyCourses) : [],
+      weeklyAssignments: savedWeeklyAssignments ? JSON.parse(savedWeeklyAssignments) : [],
+      forecasts: savedForecasts ? JSON.parse(savedForecasts) : {},
+    });
+  } catch {
+    return null;
+  }
+}
+
 export default function Page() {
   const [tasks, setTasks] = useState<Task[]>(seed);
   const [courses, setCourses] = useState<Course[]>(seedCourses);
   const [storageReady, setStorageReady] = useState(false);
-  const [dataMenuOpen, setDataMenuOpen] = useState(false);
-  const [fileHandle, setFileHandle] = useState<LocalFileHandle | null>(null);
-  const [fileReady, setFileReady] = useState(false);
-  const [fileStatus, setFileStatus] = useState('尚未连接本地数据文件');
-  const [fileStatusKind, setFileStatusKind] = useState<'idle' | 'saving' | 'saved' | 'warning' | 'error'>('idle');
-  const backupInputRef = useRef<HTMLInputElement>(null);
+  const [session, setSession] = useState<Session | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signin');
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authMessage, setAuthMessage] = useState('');
+  const [cloudStatus, setCloudStatus] = useState('正在连接云端…');
+  const [cloudStatusKind, setCloudStatusKind] = useState<'loading' | 'saving' | 'saved' | 'error'>('loading');
+  const hydratedUserRef = useRef<string | null>(null);
   const calendarPreviewRef = useRef<HTMLElement>(null);
   const expandedCalendarRef = useRef<HTMLElement>(null);
   const [filter, setFilter] = useState('全部');
@@ -172,91 +155,91 @@ export default function Page() {
   const [gradeRows, setGradeRows] = useState<GradeRow[]>([{ id: 1, name: '', weight: '', kind: 'task' }, { id: 2, name: '', weight: '', kind: 'task' }]);
   const [gradeError, setGradeError] = useState('');
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
-  const [draft, setDraft] = useState<{ title: string; course: string; due: string; notes: string; gradeCategory: string; score: string }>({ title: '', course: seedCourses[0].name, due: '2026-09-01T23:59', notes: '', gradeCategory: '', score: '' });
-  const [batchDraft, setBatchDraft] = useState({ title: 'Weekly Assignment', course: seedCourses[0].name, gradeCategory: '', weekday: '1', dueTime: '23:59', startDate: '2026-09-01', endDate: '2026-12-18', notes: '' });
-  const dataBundle = useMemo<DataBundle>(() => ({ format: 'deadline-tracker', version: 1, savedAt: new Date().toISOString(), tasks, courses, weeklyCourses, weeklyAssignments, forecasts }), [tasks, courses, weeklyCourses, weeklyAssignments, forecasts]);
+  const [draft, setDraft] = useState<{ title: string; course: string; due: string; notes: string; gradeCategory: string; score: string }>({ title: '', course: '', due: `${new Date().toISOString().slice(0, 10)}T23:59`, notes: '', gradeCategory: '', score: '' });
+  const [batchDraft, setBatchDraft] = useState({ title: 'Weekly Assignment', course: '', gradeCategory: '', weekday: '1', dueTime: '23:59', startDate: new Date().toISOString().slice(0, 10), endDate: new Date(new Date().setMonth(new Date().getMonth() + 4)).toISOString().slice(0, 10), notes: '' });
+  const dataBundle = useMemo<DataBundle>(() => ({ format: 'deadline-tracker', version: 2, savedAt: new Date().toISOString(), tasks, courses, weeklyCourses, weeklyAssignments, forecasts }), [tasks, courses, weeklyCourses, weeklyAssignments, forecasts]);
 
   useEffect(() => {
-    let loadedTasks = seed;
-    const savedTasks = localStorage.getItem('deadline-tasks');
-    if (savedTasks) {
-      try {
-        loadedTasks = (JSON.parse(savedTasks) as Array<Omit<Task, 'notes' | 'gradeCategory' | 'score'> & { notes?: string; gradeCategory?: string; score?: number | null }>).map((task) => ({ ...task, due: task.due.includes('T') ? task.due : `${task.due}T23:59`, notes: task.notes ?? '', gradeCategory: task.gradeCategory ?? '', score: typeof task.score === 'number' ? task.score : null }));
-      } catch { /* Keep the starter list if saved data is invalid. */ }
+    if (!supabaseConfigured || !supabase) {
+      setAuthReady(true);
+      return;
     }
-    setTasks(loadedTasks);
-
-    let loadedCourses: Course[] = [];
-    const savedCourses = localStorage.getItem('deadline-courses');
-    if (savedCourses) {
-      try {
-        loadedCourses = (JSON.parse(savedCourses) as Array<string | Course>).map((course) => typeof course === 'string'
-          ? { name: course, grading: [] }
-          : { name: course.name, grading: Array.isArray(course.grading) ? course.grading.map((category) => ({ ...category, kind: category.kind === 'exam' ? 'exam' : 'task', score: typeof category.score === 'number' ? category.score : null })) : [] });
-      } catch { /* Rebuild courses from assignments below. */ }
-    }
-    for (const name of loadedTasks.map((task) => task.course)) {
-      if (name && !loadedCourses.some((course) => course.name === name)) loadedCourses.push({ name, grading: [] });
-    }
-    setCourses(loadedCourses);
-    setDraft((current) => ({ ...current, course: loadedCourses[0]?.name ?? '' }));
-    setBatchDraft((current) => ({ ...current, course: loadedCourses[0]?.name ?? '' }));
-    try { setWeeklyCourses(normalizeWeeklyItems(JSON.parse(localStorage.getItem('deadline-weekly-courses') ?? '[]'))); } catch { /* Start with an empty weekly course schedule. */ }
-    try { setWeeklyAssignments(normalizeWeeklyItems(JSON.parse(localStorage.getItem('deadline-weekly-assignments') ?? '[]'))); } catch { /* Start with an empty weekly assignment schedule. */ }
-    try { setForecasts(JSON.parse(localStorage.getItem('deadline-grade-forecasts') ?? '{}')); } catch { /* Start with fresh grade forecasts. */ }
-    setStorageReady(true);
-  }, []);
-
-  useEffect(() => { if (storageReady) localStorage.setItem('deadline-tasks', JSON.stringify(tasks)); }, [tasks, storageReady]);
-  useEffect(() => { if (storageReady) localStorage.setItem('deadline-courses', JSON.stringify(courses)); }, [courses, storageReady]);
-  useEffect(() => { if (storageReady) localStorage.setItem('deadline-weekly-courses', JSON.stringify(weeklyCourses)); }, [weeklyCourses, storageReady]);
-  useEffect(() => { if (storageReady) localStorage.setItem('deadline-weekly-assignments', JSON.stringify(weeklyAssignments)); }, [weeklyAssignments, storageReady]);
-  useEffect(() => { if (storageReady) localStorage.setItem('deadline-grade-forecasts', JSON.stringify(forecasts)); }, [forecasts, storageReady]);
-
-  useEffect(() => {
-    if (!storageReady || !('indexedDB' in window)) return;
-    let cancelled = false;
-    void recallFileHandle().then(async (handle) => {
-      if (!handle || cancelled) return;
-      setFileHandle(handle);
-      const permission = handle.queryPermission ? await handle.queryPermission({ mode: 'readwrite' }) : 'prompt';
-      if (cancelled) return;
-      if (permission !== 'granted') {
-        setFileStatus(`${handle.name} 需要重新授权`);
-        setFileStatusKind('warning');
-        return;
-      }
-      const bundle = await readDataFile(handle);
-      if (cancelled) return;
-      if (bundle) applyDataBundle(bundle);
-      setFileReady(true);
-      setFileStatus(`已连接 ${handle.name}`);
-      setFileStatusKind('saved');
-    }).catch(() => {
-      if (!cancelled) {
-        setFileStatus('无法恢复上次连接，请重新选择文件');
-        setFileStatusKind('warning');
+    let active = true;
+    void supabase.auth.getSession().then(({ data }) => {
+      if (!active) return;
+      setSession(data.session);
+      setAuthReady(true);
+    });
+    const { data: listener } = supabase.auth.onAuthStateChange((_event, nextSession) => {
+      setSession(nextSession);
+      setAuthReady(true);
+      if (!nextSession) {
+        hydratedUserRef.current = null;
+        setStorageReady(false);
+        applyDataBundle(normalizeDataBundle({}));
       }
     });
-    return () => { cancelled = true; };
-  }, [storageReady]);
+    return () => {
+      active = false;
+      listener.subscription.unsubscribe();
+    };
+  }, []);
 
   useEffect(() => {
-    if (!storageReady || !fileHandle || !fileReady) return;
+    if (!session || !supabase) return;
+    const client = supabase;
+    const userId = session.user.id;
+    let cancelled = false;
+    setStorageReady(false);
+    setCloudStatus('正在读取云端数据…');
+    setCloudStatusKind('loading');
+    void (async () => {
+      const { data, error } = await client.from('tracker_states').select('data').eq('user_id', userId).maybeSingle();
+      if (error) throw error;
+      let bundle: DataBundle;
+      if (data?.data) {
+        bundle = normalizeDataBundle(data.data);
+      } else {
+        const migrationKey = `deadline-cloud-migrated-${userId}`;
+        const legacy = localStorage.getItem(migrationKey) ? null : readLegacyBrowserData();
+        bundle = legacy ?? normalizeDataBundle({});
+        const { error: createError } = await client.from('tracker_states').upsert({ user_id: userId, data: bundle, updated_at: new Date().toISOString() });
+        if (createError) throw createError;
+        if (legacy) localStorage.setItem(migrationKey, 'true');
+      }
+      if (cancelled) return;
+      applyDataBundle(bundle);
+      hydratedUserRef.current = userId;
+      setStorageReady(true);
+      setCloudStatus('所有更改已保存');
+      setCloudStatusKind('saved');
+    })().catch((error: unknown) => {
+      if (cancelled) return;
+      setCloudStatus(error instanceof Error ? error.message : '无法读取云端数据');
+      setCloudStatusKind('error');
+    });
+    return () => { cancelled = true; };
+  }, [session?.user.id]);
+
+  useEffect(() => {
+    if (!storageReady || !session || !supabase || hydratedUserRef.current !== session.user.id) return;
+    const client = supabase;
+    const userId = session.user.id;
+    setCloudStatus('正在保存…');
+    setCloudStatusKind('saving');
     const timer = window.setTimeout(() => {
-      setFileStatus('正在保存到本地文件…');
-      setFileStatusKind('saving');
-      void writeDataFile(fileHandle, dataBundle).then(() => {
-        setFileStatus(`已自动保存 · ${new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`);
-        setFileStatusKind('saved');
-      }).catch(() => {
-        setFileReady(false);
-        setFileStatus('自动保存失败，请重新授权');
-        setFileStatusKind('error');
+      void (async () => {
+        const { error } = await client.from('tracker_states').upsert({ user_id: userId, data: dataBundle, updated_at: new Date().toISOString() });
+        if (error) throw error;
+        setCloudStatus(`已保存 · ${new Date().toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })}`);
+        setCloudStatusKind('saved');
+      })().catch((error: unknown) => {
+        setCloudStatus(error instanceof Error ? error.message : '云端保存失败');
+        setCloudStatusKind('error');
       });
-    }, 500);
+    }, 700);
     return () => window.clearTimeout(timer);
-  }, [dataBundle, fileHandle, fileReady, storageReady]);
+  }, [dataBundle, session?.user.id, storageReady]);
 
   useEffect(() => {
     if (!calendarExpanded) return;
@@ -294,107 +277,25 @@ export default function Page() {
     setBatchDraft((current) => ({ ...current, course: bundle.courses[0]?.name ?? '' }));
   }
 
-  function pickerWindow() {
-    return window as unknown as FilePickerWindow;
-  }
-
-  async function connectAndSaveFile() {
-    const picker = pickerWindow();
-    if (!picker.showSaveFilePicker) {
-      setFileStatus('当前浏览器不支持直接写入文件，请使用导出备份');
-      setFileStatusKind('warning');
+  async function submitAuth(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!supabase) return;
+    setAuthBusy(true);
+    setAuthMessage('');
+    const result = authMode === 'signin'
+      ? await supabase.auth.signInWithPassword({ email: authEmail.trim(), password: authPassword })
+      : await supabase.auth.signUp({ email: authEmail.trim(), password: authPassword, options: { emailRedirectTo: window.location.href } });
+    setAuthBusy(false);
+    if (result.error) {
+      setAuthMessage(result.error.message);
       return;
     }
-    try {
-      const handle = await picker.showSaveFilePicker({ suggestedName: 'assignment-tracker-data.json', ...jsonPickerOptions });
-      await writeDataFile(handle, dataBundle);
-      await rememberFileHandle(handle);
-      setFileHandle(handle);
-      setFileReady(true);
-      setFileStatus(`已连接 ${handle.name}`);
-      setFileStatusKind('saved');
-    } catch (error) {
-      if (!(error instanceof DOMException && error.name === 'AbortError')) {
-        setFileStatus('连接文件失败，请重试');
-        setFileStatusKind('error');
-      }
-    }
+    if (authMode === 'signup' && !result.data.session) setAuthMessage('注册成功。请打开验证邮件，确认后再登录。');
   }
 
-  async function restoreFromLocalFile() {
-    const picker = pickerWindow();
-    if (!picker.showOpenFilePicker) {
-      backupInputRef.current?.click();
-      return;
-    }
-    try {
-      const [handle] = await picker.showOpenFilePicker({ multiple: false, ...jsonPickerOptions });
-      if (!handle) return;
-      const bundle = await readDataFile(handle);
-      if (!bundle) throw new Error('数据文件为空。');
-      const permission = handle.requestPermission ? await handle.requestPermission({ mode: 'readwrite' }) : 'prompt';
-      applyDataBundle(bundle);
-      setFileHandle(handle);
-      setFileReady(permission === 'granted');
-      if (permission === 'granted') await rememberFileHandle(handle);
-      setFileStatus(permission === 'granted' ? `已恢复并连接 ${handle.name}` : `已恢复 ${handle.name}，但没有自动保存权限`);
-      setFileStatusKind(permission === 'granted' ? 'saved' : 'warning');
-    } catch (error) {
-      if (!(error instanceof DOMException && error.name === 'AbortError')) {
-        setFileStatus(error instanceof Error ? error.message : '读取数据文件失败');
-        setFileStatusKind('error');
-      }
-    }
-  }
-
-  async function reauthorizeFile() {
-    if (!fileHandle) return;
-    try {
-      const permission = fileHandle.requestPermission ? await fileHandle.requestPermission({ mode: 'readwrite' }) : 'prompt';
-      if (permission !== 'granted') {
-        setFileStatus('没有获得文件读写权限');
-        setFileStatusKind('warning');
-        return;
-      }
-      const bundle = await readDataFile(fileHandle);
-      if (bundle) applyDataBundle(bundle);
-      await rememberFileHandle(fileHandle);
-      setFileReady(true);
-      setFileStatus(`已重新连接 ${fileHandle.name}`);
-      setFileStatusKind('saved');
-    } catch {
-      setFileStatus('重新授权失败，请重新选择文件');
-      setFileStatusKind('error');
-    }
-  }
-
-  function exportBackup() {
-    const url = URL.createObjectURL(new Blob([JSON.stringify(dataBundle, null, 2)], { type: 'application/json' }));
-    const link = document.createElement('a');
-    link.href = url;
-    link.download = `assignment-tracker-backup-${new Date().toISOString().slice(0, 10)}.json`;
-    link.click();
-    URL.revokeObjectURL(url);
-    setFileStatus('备份文件已导出');
-    setFileStatusKind('saved');
-  }
-
-  async function importBackup(event: React.ChangeEvent<HTMLInputElement>) {
-    const file = event.target.files?.[0];
-    event.target.value = '';
-    if (!file) return;
-    try {
-      const raw = JSON.parse(await file.text()) as Partial<DataBundle>;
-      if (!Array.isArray(raw.tasks) || !Array.isArray(raw.courses)) throw new Error('这不是有效的 Deadline Tracker 备份。');
-      const bundle = await readDataFile({ name: file.name, getFile: async () => file, createWritable: async () => { throw new Error('只读文件'); } });
-      if (!bundle) throw new Error('备份文件为空。');
-      applyDataBundle(bundle);
-      setFileStatus(`已导入 ${file.name}；连接数据文件后可自动保存`);
-      setFileStatusKind('warning');
-    } catch (error) {
-      setFileStatus(error instanceof Error ? error.message : '导入备份失败');
-      setFileStatusKind('error');
-    }
+  async function signOut() {
+    if (!supabase) return;
+    await supabase.auth.signOut();
   }
 
   const active = tasks.filter((task) => !task.done);
@@ -453,8 +354,8 @@ export default function Page() {
     if (!draft.title.trim() || !draft.course) return;
     const course = courses.find((item) => item.name === draft.course);
     if (taskCategoriesFor(course).length && !draft.gradeCategory) return;
-    setTasks([{ ...draft, title: draft.title.trim(), notes: draft.notes.trim(), score: draft.score === '' ? null : Number(draft.score), id: Date.now(), done: false }, ...tasks]);
-    setDraft({ title: '', course: draft.course, due: '2026-09-01T23:59', notes: '', gradeCategory: draft.gradeCategory, score: '' });
+    setTasks([{ ...draft, title: draft.title.trim(), notes: draft.notes.trim(), score: draft.score === '' ? null : Number(draft.score), id: Date.now(), done: false, source: 'manual', externalId: null }, ...tasks]);
+    setDraft({ title: '', course: draft.course, due: `${new Date().toISOString().slice(0, 10)}T23:59`, notes: '', gradeCategory: draft.gradeCategory, score: '' });
     setFormOpen(false);
   }
 
@@ -468,6 +369,11 @@ export default function Page() {
       return;
     }
     const previous = editingCourse ? courses.find((course) => course.name === editingCourse) : undefined;
+    const nameConflict = courses.some((course) => course.name !== editingCourse && course.name.toLocaleLowerCase() === name.toLocaleLowerCase());
+    if (nameConflict) {
+      setGradeError('已经存在同名课程，请使用另一个名称。');
+      return;
+    }
     const grading = usedRows.map((row, index) => ({ name: row.name.trim(), weight: Number(row.weight), kind: row.kind, score: previous?.grading[index]?.kind === row.kind ? previous.grading[index].score : null }));
     const total = grading.reduce((sum, item) => sum + item.weight, 0);
     if (grading.length && Math.abs(total - 100) > 0.001) {
@@ -477,9 +383,19 @@ export default function Page() {
     if (editingCourse) {
       const categoryUpdates = new Map(previous?.grading.map((item, index) => [item.name, grading[index]]) ?? []);
       setTasks(tasks.map((task) => task.course === editingCourse && task.gradeCategory && categoryUpdates.has(task.gradeCategory)
-        ? { ...task, gradeCategory: categoryUpdates.get(task.gradeCategory)?.kind === 'task' ? categoryUpdates.get(task.gradeCategory)?.name ?? '' : '' }
-        : task));
-      setCourses(courses.map((course) => course.name === editingCourse ? { ...course, grading } : course));
+        ? { ...task, course: name, gradeCategory: categoryUpdates.get(task.gradeCategory)?.kind === 'task' ? categoryUpdates.get(task.gradeCategory)?.name ?? '' : '' }
+        : task.course === editingCourse ? { ...task, course: name } : task));
+      setWeeklyCourses(weeklyCourses.map((item) => item.course === editingCourse ? { ...item, course: name } : item));
+      setWeeklyAssignments(weeklyAssignments.map((item) => item.course === editingCourse ? { ...item, course: name } : item));
+      setForecasts((current) => {
+        if (name === editingCourse || !current[editingCourse]) return current;
+        const { [editingCourse]: renamedForecast, ...rest } = current;
+        return { ...rest, [name]: renamedForecast };
+      });
+      setCourses(courses.map((course) => course.name === editingCourse ? { ...course, name, grading } : course));
+      setFilter((current) => current === editingCourse ? name : current);
+      setDraft((current) => ({ ...current, course: current.course === editingCourse ? name : current.course }));
+      setBatchDraft((current) => ({ ...current, course: current.course === editingCourse ? name : current.course }));
       closeCourseForm();
       return;
     }
@@ -488,7 +404,7 @@ export default function Page() {
       setGradeError('这个课程已经存在，可以在下方选择“编辑评分”。');
       return;
     }
-    setCourses([...courses, { name, grading }]);
+    setCourses([...courses, { name, grading, source: 'manual', externalId: null }]);
     setDraft((current) => ({ ...current, course: name }));
     setFilter(name);
     closeCourseForm();
@@ -502,7 +418,7 @@ export default function Page() {
       : `删除“${course}”吗？`;
     if (!window.confirm(message)) return;
     const remaining = courses.filter((item) => item.name !== course);
-    const nextCourses = affected && !remaining.some((item) => item.name === UNASSIGNED) ? [...remaining, { name: UNASSIGNED, grading: [] }] : remaining;
+    const nextCourses = affected && !remaining.some((item) => item.name === UNASSIGNED) ? [...remaining, { name: UNASSIGNED, grading: [], source: 'manual' as const, externalId: null }] : remaining;
     if (affected) setTasks(tasks.map((task) => task.course === course ? { ...task, course: UNASSIGNED, gradeCategory: '' } : task));
     setCourses(nextCourses);
     setFilter(affected ? UNASSIGNED : '全部');
@@ -547,7 +463,7 @@ export default function Page() {
     while (cursor <= end) {
       if (cursor.getDay() === Number(batchDraft.weekday)) {
         const date = `${cursor.getFullYear()}-${String(cursor.getMonth() + 1).padStart(2, '0')}-${String(cursor.getDate()).padStart(2, '0')}`;
-        additions.push({ id: Date.now() + additions.length, title: batchDraft.title.trim(), course: batchDraft.course, due: `${date}T${batchDraft.dueTime}`, done: false, notes: batchDraft.notes.trim(), gradeCategory: batchDraft.gradeCategory, score: null });
+        additions.push({ id: Date.now() + additions.length, title: batchDraft.title.trim(), course: batchDraft.course, due: `${date}T${batchDraft.dueTime}`, done: false, notes: batchDraft.notes.trim(), gradeCategory: batchDraft.gradeCategory, score: null, source: 'manual', externalId: null });
       }
       cursor.setDate(cursor.getDate() + 1);
     }
@@ -667,26 +583,46 @@ export default function Page() {
   const timetableDuration = Math.max(60, timetableEnd - timetableStart);
   const timetableHeight = Math.max(500, timetableDuration / 60 * 54);
   const timetableHours = Array.from({ length: Math.floor(timetableDuration / 60) + 1 }, (_, index) => timetableStart + index * 60);
+  const todayLabel = new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' }).format(new Date());
+
+  if (!supabaseConfigured) return <main className="auth-shell">
+    <section className="auth-card setup-card">
+      <div className="auth-brand"><span className="mark">D</span><strong>deadline</strong></div>
+      <div><p className="eyebrow">Cloud setup</p><h1>云端后端尚未连接</h1></div>
+      <p>新版已经迁移到 Supabase，但本机还没有项目地址和浏览器可用的 publishable key。完成一次配置后，课程、作业、课表和成绩会按账户自动保存。</p>
+      <ol className="setup-steps"><li>在 Supabase 创建项目并运行仓库中的数据库迁移 SQL。</li><li>复制项目 URL 和 publishable key 到 <code>.env.local</code>。</li><li>重新启动开发服务器；部署时把同名变量添加为 GitHub Actions secrets。</li></ol>
+      <small>完整步骤见项目根目录的 SUPABASE_SETUP.md。不要把 service role key 放进前端。</small>
+    </section>
+  </main>;
+
+  if (!authReady) return <main className="auth-shell"><section className="auth-card auth-loading"><span className="cloud-spinner" /><p>正在检查登录状态…</p></section></main>;
+
+  if (!session) return <main className="auth-shell">
+    <section className="auth-card">
+      <div className="auth-brand"><span className="mark">D</span><strong>deadline</strong></div>
+      <div><p className="eyebrow">{authMode === 'signin' ? 'Welcome back' : 'Create account'}</p><h1>{authMode === 'signin' ? '登录你的学习空间' : '创建学习空间'}</h1><p>每个账户的数据相互隔离，并自动同步到云端。</p></div>
+      <form className="auth-form" onSubmit={submitAuth}>
+        <label>邮箱<input type="email" autoComplete="email" required value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} placeholder="you@example.com" /></label>
+        <label>密码<input type="password" autoComplete={authMode === 'signin' ? 'current-password' : 'new-password'} minLength={6} required value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} placeholder="至少 6 位" /></label>
+        {authMessage && <p className="auth-message" role="status">{authMessage}</p>}
+        <button className="add" disabled={authBusy}>{authBusy ? '请稍候…' : authMode === 'signin' ? '登录' : '注册'}</button>
+      </form>
+      <button type="button" className="auth-switch" onClick={() => { setAuthMode(authMode === 'signin' ? 'signup' : 'signin'); setAuthMessage(''); }}>{authMode === 'signin' ? '还没有账户？注册' : '已有账户？登录'}</button>
+    </section>
+  </main>;
+
+  if (!storageReady) return <main className="auth-shell"><section className="auth-card auth-loading"><span className={cloudStatusKind === 'error' ? 'cloud-error-mark' : 'cloud-spinner'} />
+    <div><h1>{cloudStatusKind === 'error' ? '无法读取云端数据' : '正在打开你的学习空间'}</h1><p>{cloudStatus}</p></div>
+    {cloudStatusKind === 'error' && <button type="button" className="secondary" onClick={() => window.location.reload()}>重新尝试</button>}
+  </section></main>;
 
   return <main>
     <header>
       <div className="brand"><span className="mark">D</span><span>deadline</span></div>
-      <div className="date">2026 年 8 月 31 日 · 星期一</div>
+      <div className="date">{todayLabel}</div>
       <div className="header-actions">
-        <div className="data-menu">
-          <button type="button" className={`data-menu-trigger ${fileReady ? 'connected' : ''}`} aria-expanded={dataMenuOpen} aria-controls="local-data-panel" onClick={() => setDataMenuOpen(!dataMenuOpen)}>数据<span aria-hidden="true">{dataMenuOpen ? '▴' : '▾'}</span></button>
-          {dataMenuOpen && <section id="local-data-panel" className="data-menu-panel" aria-label="本地数据管理">
-            <div className={`data-file-status ${fileStatusKind}`} aria-live="polite"><span aria-hidden="true" /><div><strong>{fileReady ? '本地文件已连接' : '本地数据文件'}</strong><p>{fileStatus}</p></div></div>
-            <div className="data-menu-actions">
-              {fileHandle && !fileReady && <button type="button" className="data-action primary" onClick={reauthorizeFile}>重新授权并读取</button>}
-              <button type="button" className="data-action" onClick={connectAndSaveFile}>连接并保存当前数据</button>
-              <button type="button" className="data-action" onClick={restoreFromLocalFile}>从本地文件恢复</button>
-            </div>
-            <div className="data-backup-actions"><button type="button" onClick={exportBackup}>导出备份</button><button type="button" onClick={() => backupInputRef.current?.click()}>导入备份</button></div>
-            <input ref={backupInputRef} className="data-file-input" type="file" accept="application/json,.json" onChange={importBackup} />
-            <small>清除浏览器记录不会删除电脑上的数据文件；之后重新选择同一文件即可恢复。</small>
-          </section>}
-        </div>
+        <div className={`cloud-status ${cloudStatusKind}`} title={session.user.email ?? '已登录'} aria-live="polite"><span aria-hidden="true" /><div><strong>{cloudStatus}</strong><small>{session.user.email}</small></div></div>
+        <button type="button" className="account-signout" onClick={signOut}>退出</button>
         <button className="secondary" onClick={openCourseForm}>＋ 添加课程</button><button className="secondary" onClick={openBatchForm}>＋ 批量添加</button><button className="add" onClick={openTaskForm}>＋ 添加作业</button>
       </div>
     </header>
@@ -759,11 +695,11 @@ export default function Page() {
     </section></div>}
 
     {courseFormOpen && <div className="modal-backdrop" onMouseDown={closeCourseForm}><form className="modal course-modal" onSubmit={saveCourse} onMouseDown={(event) => event.stopPropagation()}>
-      <div><p className="eyebrow">课程管理</p><h2>{editingCourse ? '编辑课程评分' : '添加课程'}</h2><p className="modal-copy">设置课程的评分项目；填写后各项比例需要合计 100%。</p></div>
-      <label>课程名称<input autoFocus={!editingCourse} required disabled={Boolean(editingCourse)} value={courseName} onChange={(event) => { setCourseName(event.target.value); setGradeError(''); }} placeholder="例如：History 201" /></label>
+      <div><p className="eyebrow">课程管理</p><h2>{editingCourse ? '编辑课程' : '添加课程'}</h2><p className="modal-copy">课程名称和评分项目都可以修改；填写评分项目后，各项比例需要合计 100%。</p></div>
+      <label>课程名称<input autoFocus required value={courseName} onChange={(event) => { setCourseName(event.target.value); setGradeError(''); }} placeholder="例如：History 201" /></label>
       <div className="grading-editor"><div className="grading-head"><span>评分分布</span><strong className={gradeRows.some((row) => row.name || row.weight) && Math.abs(gradeTotal - 100) > 0.001 ? 'total-warning' : ''}>合计 {gradeTotal}%</strong></div>{gradeRows.map((row) => <div className="grade-row" key={row.id}><input aria-label="评分项目名称" value={row.name} onChange={(event) => { setGradeRows(gradeRows.map((item) => item.id === row.id ? { ...item, name: event.target.value } : item)); setGradeError(''); }} placeholder="例如：Midterm" /><select aria-label="评分项目类型" value={row.kind} onChange={(event) => setGradeRows(gradeRows.map((item) => item.id === row.id ? { ...item, kind: event.target.value as 'exam' | 'task' } : item))}><option value="exam">考试</option><option value="task">任务</option></select><div className="weight-input"><input aria-label="评分比例" type="number" min="0.01" max="100" step="0.01" value={row.weight} onChange={(event) => { setGradeRows(gradeRows.map((item) => item.id === row.id ? { ...item, weight: event.target.value } : item)); setGradeError(''); }} placeholder="50" /><span>%</span></div><button type="button" aria-label="删除评分项目" onClick={() => setGradeRows(gradeRows.filter((item) => item.id !== row.id))}>×</button></div>)}<button type="button" className="add-grade" onClick={() => setGradeRows([...gradeRows, { id: Date.now(), name: '', weight: '', kind: 'task' }])}>＋ 添加评分项目</button>{gradeError && <p className="form-error">{gradeError}</p>}</div>
-      <button className="add course-save">{editingCourse ? '保存评分设置' : '保存课程'}</button>
-      {courses.length > 0 && <div className="course-list"><p>已有课程</p>{courses.map((course) => <div className="course-row" key={course.name}><div className="course-info"><span><strong>{course.name}</strong><small>{tasks.filter((task) => task.course === course.name).length} 项作业</small></span><p>{course.grading.length ? course.grading.map((item) => `${item.name}（${item.kind === 'exam' ? '考试' : '任务'}） ${item.weight}%`).join(' · ') : '尚未设置评分分布'}</p></div><div className="course-actions"><button type="button" className="course-edit" disabled={course.name === UNASSIGNED} onClick={() => editCourse(course)}>编辑评分</button><button type="button" className="course-delete" disabled={course.name === UNASSIGNED} title={course.name === UNASSIGNED ? '系统分类不能删除' : `删除 ${course.name}`} onClick={() => deleteCourse(course.name)}>{course.name === UNASSIGNED ? '保留' : '删除'}</button></div></div>)}</div>}
+      <button className="add course-save">{editingCourse ? '保存课程修改' : '保存课程'}</button>
+      {courses.length > 0 && <div className="course-list"><p>已有课程</p>{courses.map((course) => <div className="course-row" key={course.name}><div className="course-info"><span><strong>{course.name}</strong><small>{tasks.filter((task) => task.course === course.name).length} 项作业</small></span><p>{course.grading.length ? course.grading.map((item) => `${item.name}（${item.kind === 'exam' ? '考试' : '任务'}） ${item.weight}%`).join(' · ') : '尚未设置评分分布'}</p></div><div className="course-actions"><button type="button" className="course-edit" disabled={course.name === UNASSIGNED} onClick={() => editCourse(course)}>编辑课程</button><button type="button" className="course-delete" disabled={course.name === UNASSIGNED} title={course.name === UNASSIGNED ? '系统分类不能删除' : `删除 ${course.name}`} onClick={() => deleteCourse(course.name)}>{course.name === UNASSIGNED ? '保留' : '删除'}</button></div></div>)}</div>}
       <div className="actions"><button type="button" className="plain" onClick={closeCourseForm}>完成</button></div>
     </form></div>}
 

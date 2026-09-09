@@ -3,3 +3,7 @@ dist/
 .vite/
 .next/
 .wrangler/
+.env
+.env.local
+.env.*.local
+*.tsbuildinfo

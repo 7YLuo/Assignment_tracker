@@ -1,28 +1,36 @@
 .header-actions { display: flex; align-items: center; gap: 8px; }
-.data-menu { position: relative; }
-.data-menu-trigger { display: flex; align-items: center; gap: 6px; border: 1px solid #cfc7bb; background: #f8f5ee; color: #4b4741; border-radius: 8px; padding: 9px 11px; font-size: 12px; font-weight: 600; }
-.data-menu-trigger:hover, .data-menu-trigger[aria-expanded='true'] { border-color: #a89f94; background: #eee8de; }
-.data-menu-trigger.connected::before { content: ''; width: 6px; height: 6px; border-radius: 50%; background: #5f7e60; box-shadow: 0 0 0 2px #dfe9dc; }
-.data-menu-trigger span { color: #898178; font-size: 10px; }
-.data-menu-panel { position: absolute; z-index: 20; top: calc(100% + 9px); right: 0; width: min(310px, calc(100vw - 40px)); padding: 14px; border: 1px solid #d8d0c5; border-radius: 11px; background: #fbfaf7; box-shadow: 0 16px 42px #29251f24; }
-.data-file-status { display: flex; align-items: flex-start; gap: 10px; padding: 9px 10px; border-radius: 8px; background: #f1ece3; }
-.data-file-status > span { flex: 0 0 auto; width: 8px; height: 8px; margin-top: 5px; border-radius: 50%; background: #9b938a; }
-.data-file-status.saving > span { background: #c89a2e; }
-.data-file-status.saved > span { background: #5f7e60; }
-.data-file-status.warning > span { background: #d58a32; }
-.data-file-status.error > span { background: #b94f38; }
-.data-file-status div { min-width: 0; }
-.data-file-status strong { display: block; color: #3d3934; font-size: 12px; }
-.data-file-status p { margin: 3px 0 0; color: #766f67; font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
-.data-menu-actions { display: grid; gap: 6px; margin-top: 10px; }
-.data-action { width: 100%; border: 1px solid #ddd5ca; border-radius: 7px; background: #fffefa; color: #4f4943; padding: 8px 10px; text-align: left; font-size: 12px; }
-.data-action:hover { border-color: #bdafa3; background: #f6f1e8; }
-.data-action.primary { border-color: #d6694b; background: #f9e1d8; color: #953e2a; font-weight: 600; }
-.data-backup-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-top: 7px; }
-.data-backup-actions button { border: 0; border-radius: 7px; background: transparent; color: #746b62; padding: 7px 8px; font-size: 11px; }
-.data-backup-actions button:hover { background: #eee8de; }
-.data-menu-panel > small { display: block; margin-top: 8px; color: #928a81; font-size: 10px; line-height: 1.45; }
-.data-file-input { display: none; }
+.cloud-status { display: flex; align-items: center; gap: 8px; max-width: 190px; padding: 6px 9px; border: 1px solid #ded7cc; border-radius: 8px; background: #f8f5ee; }
+.cloud-status > span { flex: 0 0 auto; width: 7px; height: 7px; border-radius: 50%; background: #8e877e; }
+.cloud-status.loading > span, .cloud-status.saving > span { background: #c8912c; }
+.cloud-status.saved > span { background: #5f7e60; }
+.cloud-status.error > span { background: #b94f38; }
+.cloud-status div { min-width: 0; display: grid; gap: 1px; }
+.cloud-status strong, .cloud-status small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cloud-status strong { color: #4f4942; font-size: 10px; font-weight: 600; }
+.cloud-status small { color: #8d857c; font-size: 9px; }
+.account-signout { border: 0; background: transparent; color: #716a62; padding: 7px 3px; font-size: 11px; }
+.account-signout:hover { color: #a44632; }
+.auth-shell { min-height: 100vh; max-width: none; display: grid; place-items: center; padding: 36px 20px; background: radial-gradient(circle at 18% 15%, #f1d9cc 0, transparent 30%), #f5f2eb; }
+.auth-card { width: min(440px, 100%); display: grid; gap: 24px; padding: 34px; border: 1px solid #ddd5c9; border-radius: 16px; background: #fbfaf7; box-shadow: 0 24px 70px #4d40321c; }
+.auth-brand { display: flex; align-items: center; gap: 10px; font-size: 20px; }
+.auth-card h1 { margin: 0; font: 600 32px/1.1 'Playfair Display'; letter-spacing: -.6px; }
+.auth-card p { margin: 8px 0 0; color: #746d65; font-size: 14px; line-height: 1.55; }
+.auth-form { display: grid; gap: 14px; }
+.auth-form label { display: grid; gap: 7px; color: #49443e; font-size: 13px; font-weight: 600; }
+.auth-form input { width: 100%; border: 1px solid #d8d0c5; border-radius: 8px; background: #fffefa; padding: 11px 12px; outline-color: #e46948; }
+.auth-form .add { margin-top: 4px; }
+.auth-form .add:disabled { cursor: wait; opacity: .65; }
+.auth-message { margin: 0 !important; color: #a3422d !important; font-size: 12px !important; }
+.auth-switch { justify-self: start; border: 0; background: transparent; color: #9a5040; padding: 0; font-size: 12px; font-weight: 600; }
+.setup-card { width: min(560px, 100%); }
+.setup-steps { display: grid; gap: 10px; margin: 0; padding-left: 21px; color: #4d4842; font-size: 13px; line-height: 1.5; }
+.setup-card code { border-radius: 4px; background: #eee8df; padding: 2px 5px; font: 11px 'DM Mono'; }
+.setup-card > small { color: #8c847b; font-size: 11px; line-height: 1.5; }
+.auth-loading { justify-items: center; text-align: center; }
+.cloud-spinner { width: 28px; height: 28px; border: 3px solid #e1d8cc; border-top-color: #d95738; border-radius: 50%; animation: cloud-spin .7s linear infinite; }
+.cloud-error-mark { display: grid; place-items: center; width: 30px; height: 30px; border-radius: 50%; background: #f5d9d1; color: #a8422d; }
+.cloud-error-mark::after { content: '!'; font-weight: 700; }
+@keyframes cloud-spin { to { transform: rotate(360deg); } }
 .secondary { border: 1px solid #cfc7bb; background: transparent; color: #3b3935; border-radius: 8px; padding: 10px 14px; font-weight: 600; }
 .aside-title { display: flex; align-items: center; justify-content: space-between; margin: 0 0 10px; }
 .aside-title p { font: 11px 'DM Mono'; letter-spacing: 1.5px; color: #898279; margin: 0; }
@@ -194,6 +202,11 @@
 
 @media (max-width: 680px) {
   .header-actions .secondary { display: none; }
+  .header-actions { gap: 4px; }
+  .cloud-status { max-width: 118px; padding: 6px 8px; }
+  .cloud-status small { display: none; }
+  .account-signout { padding-inline: 4px; }
+  .auth-card { padding: 27px 22px; }
   .aside-title { margin: 0; }
   .aside-title p { display: none; }
   .aside-title button { width: auto; white-space: nowrap; }
