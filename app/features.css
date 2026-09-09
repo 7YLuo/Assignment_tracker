@@ -133,25 +133,6 @@
 .exam-score { position: relative; width: 82px; }
 .exam-score input { width: 100%; border: 1px solid #d8d0c5; background: #fffefa; border-radius: 6px; padding: 7px 23px 7px 8px; font: 600 13px 'DM Mono'; outline-color: #e46948; }
 .exam-score span { position: absolute; right: 8px; top: 50%; transform: translateY(-50%); color: #817a72; font-size: 11px; }
-.grade-planner { display: grid; grid-template-columns: 180px 1fr; gap: 18px; padding: 20px 24px; border-bottom: 1px solid #e2dbd0; background: #faf7f0; }
-.planner-heading { display: grid; align-content: start; gap: 10px; }
-.planner-heading .eyebrow { margin-bottom: 0; }
-.planner-heading h3 { margin: 0; font: 600 21px 'Playfair Display'; }
-.target-score { display: grid; gap: 5px; }
-.target-score input, .forecast-items input { accent-color: #d95738; }
-.target-score strong { font: 600 15px 'DM Mono'; color: #9a5040; }
-.planner-summary { display: flex; align-items: baseline; gap: 8px; padding-bottom: 12px; border-bottom: 1px solid #e6ded2; }
-.planner-summary span { color: #756d64; font-size: 12px; }
-.planner-summary strong { font: 600 27px 'Playfair Display'; }
-.planner-summary small { color: #b6503b; font-size: 11px; }
-.planner-summary small.on-track { color: #4e6f50; }
-.forecast-items { display: grid; gap: 10px; padding-top: 13px; }
-.forecast-items label { display: grid; grid-template-columns: minmax(125px, .8fr) minmax(110px, 1.4fr) 62px; align-items: center; gap: 12px; }
-.forecast-items label > span { display: grid; gap: 2px; min-width: 0; }
-.forecast-items strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
-.forecast-items small { color: #817a72; font-size: 10px; }
-.forecast-items output { font: 600 12px 'DM Mono'; text-align: right; }
-.planner-empty { align-self: center; margin: 0; color: #817a72; font-size: 12px; line-height: 1.5; }
 .modal-backdrop { z-index: 10; }
 .modal { width: min(480px, 100%); max-height: calc(100vh - 40px); overflow: auto; }
 .modal textarea { font: inherit; border: 1px solid #d8d0c5; background: #fffefa; padding: 10px; border-radius: 7px; outline-color: #e46948; resize: vertical; line-height: 1.5; }
@@ -246,7 +227,6 @@
   .expanded-calendar-head { padding: 16px 17px 13px; }
   .expanded-calendar-head h2 { font-size: 24px; }
   .timetable-scroll { max-height: calc(100vh - 120px); }
-  .grade-planner { grid-template-columns: 1fr; }
   .grade-row { grid-template-columns: minmax(0, 1fr) 68px 86px 24px; gap: 5px; }
   .overview-grid { grid-template-columns: 1fr; padding: 26px 0 22px; }
   .urgent-panel, .calendar-panel { min-height: 150px; }

@@ -11,8 +11,7 @@ type GradeCategory = { name: string; weight: number; kind: 'exam' | 'task'; scor
 type Course = { name: string; grading: GradeCategory[]; source?: DataSource; externalId?: string | null };
 type GradeRow = { id: number; name: string; weight: string; kind: 'exam' | 'task' };
 type WeeklyItem = { id: number; weekday: number; title: string; time: string; endTime?: string; kind: '课程' | '任务'; course?: string; location?: string; color?: string };
-type Forecast = { target: number; scores: Record<string, number> };
-type DataBundle = { format: 'deadline-tracker'; version: 2; savedAt: string; tasks: Task[]; courses: Course[]; weeklyCourses: WeeklyItem[]; weeklyAssignments: WeeklyItem[]; forecasts: Record<string, Forecast> };
+type DataBundle = { format: 'deadline-tracker'; version: 3; savedAt: string; tasks: Task[]; courses: Course[]; weeklyCourses: WeeklyItem[]; weeklyAssignments: WeeklyItem[] };
 const COURSE_COLORS = ['#d76648', '#5579a6', '#63856b', '#9a68a0', '#c28a35', '#4f8c91', '#b85f78', '#766ab0', '#8b7657', '#4c8273', '#a85e42', '#6b7fba'];
 
 function timeToMinutes(time: string) {
@@ -91,13 +90,12 @@ function normalizeDataBundle(value: unknown): DataBundle {
   }
   return {
     format: 'deadline-tracker',
-    version: 2,
+    version: 3,
     savedAt: typeof raw.savedAt === 'string' ? raw.savedAt : new Date().toISOString(),
     tasks,
     courses,
     weeklyCourses: normalizeWeeklyItems(raw.weeklyCourses),
     weeklyAssignments: normalizeWeeklyItems(raw.weeklyAssignments),
-    forecasts: raw.forecasts && typeof raw.forecasts === 'object' ? raw.forecasts : {},
   };
 }
 
@@ -106,15 +104,13 @@ function readLegacyBrowserData(): DataBundle | null {
   const savedCourses = localStorage.getItem('deadline-courses');
   const savedWeeklyCourses = localStorage.getItem('deadline-weekly-courses');
   const savedWeeklyAssignments = localStorage.getItem('deadline-weekly-assignments');
-  const savedForecasts = localStorage.getItem('deadline-grade-forecasts');
-  if (![savedTasks, savedCourses, savedWeeklyCourses, savedWeeklyAssignments, savedForecasts].some(Boolean)) return null;
+  if (![savedTasks, savedCourses, savedWeeklyCourses, savedWeeklyAssignments].some(Boolean)) return null;
   try {
     return normalizeDataBundle({
       tasks: savedTasks ? JSON.parse(savedTasks) : [],
       courses: savedCourses ? JSON.parse(savedCourses) : [],
       weeklyCourses: savedWeeklyCourses ? JSON.parse(savedWeeklyCourses) : [],
       weeklyAssignments: savedWeeklyAssignments ? JSON.parse(savedWeeklyAssignments) : [],
-      forecasts: savedForecasts ? JSON.parse(savedForecasts) : {},
     });
   } catch {
     return null;
@@ -152,7 +148,6 @@ export default function Page() {
   const [calendarDraft, setCalendarDraft] = useState<{ weekday: string; title: string; time: string; endTime: string; kind: '课程' | '任务'; course: string; location: string }>({ weekday: '1', title: '', time: '09:00', endTime: '10:00', kind: '课程', course: seedCourses[0]?.name ?? '', location: '' });
   const [weeklyCourses, setWeeklyCourses] = useState<WeeklyItem[]>([]);
   const [weeklyAssignments, setWeeklyAssignments] = useState<WeeklyItem[]>([]);
-  const [forecasts, setForecasts] = useState<Record<string, Forecast>>({});
   const [courseFormOpen, setCourseFormOpen] = useState(false);
   const [courseName, setCourseName] = useState('');
   const [editingCourse, setEditingCourse] = useState<string | null>(null);
@@ -161,7 +156,7 @@ export default function Page() {
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [draft, setDraft] = useState<{ title: string; course: string; due: string; notes: string; gradeCategory: string; score: string }>({ title: '', course: '', due: `${new Date().toISOString().slice(0, 10)}T23:59`, notes: '', gradeCategory: '', score: '' });
   const [batchDraft, setBatchDraft] = useState({ title: 'Weekly Assignment', course: '', gradeCategory: '', weekday: '1', dueTime: '23:59', startDate: new Date().toISOString().slice(0, 10), endDate: new Date(new Date().setMonth(new Date().getMonth() + 4)).toISOString().slice(0, 10), notes: '' });
-  const dataBundle = useMemo<DataBundle>(() => ({ format: 'deadline-tracker', version: 2, savedAt: new Date().toISOString(), tasks, courses, weeklyCourses, weeklyAssignments, forecasts }), [tasks, courses, weeklyCourses, weeklyAssignments, forecasts]);
+  const dataBundle = useMemo<DataBundle>(() => ({ format: 'deadline-tracker', version: 3, savedAt: new Date().toISOString(), tasks, courses, weeklyCourses, weeklyAssignments }), [tasks, courses, weeklyCourses, weeklyAssignments]);
 
   useEffect(() => {
     if (!supabaseConfigured || !supabase) {
@@ -273,7 +268,6 @@ export default function Page() {
     setCourses(bundle.courses);
     setWeeklyCourses(bundle.weeklyCourses);
     setWeeklyAssignments(bundle.weeklyAssignments);
-    setForecasts(bundle.forecasts);
     setSelectedTask(null);
     setFilter('全部');
     setCategoryFilter('全部类别');
@@ -469,11 +463,6 @@ export default function Page() {
         : task.course === editingCourse ? { ...task, course: name } : task));
       setWeeklyCourses(weeklyCourses.map((item) => item.course === editingCourse ? { ...item, course: name } : item));
       setWeeklyAssignments(weeklyAssignments.map((item) => item.course === editingCourse ? { ...item, course: name } : item));
-      setForecasts((current) => {
-        if (name === editingCourse || !current[editingCourse]) return current;
-        const { [editingCourse]: renamedForecast, ...rest } = current;
-        return { ...rest, [name]: renamedForecast };
-      });
       setCourses(courses.map((course) => course.name === editingCourse ? { ...course, name, grading } : course));
       setFilter((current) => current === editingCourse ? name : current);
       setDraft((current) => ({ ...current, course: current.course === editingCourse ? name : current.course }));
@@ -621,13 +610,6 @@ export default function Page() {
     else setWeeklyAssignments(weeklyAssignments.filter((item) => item.id !== id));
   }
 
-  function updateForecast(courseName: string, update: (forecast: Forecast) => Forecast) {
-    setForecasts((current) => {
-      const forecast = current[courseName] ?? { target: 90, scores: {} };
-      return { ...current, [courseName]: update(forecast) };
-    });
-  }
-
   const gradeTotal = gradeRows.reduce((sum, row) => sum + (Number(row.weight) || 0), 0);
   const selectedCourse = courses.find((course) => course.name === filter);
   const categoryStats = (selectedCourse?.grading ?? []).map((category) => {
@@ -641,19 +623,6 @@ export default function Page() {
     ? categoryStats.reduce((sum, item) => sum + (item.average ?? 0) * item.weight, 0) / gradedWeight
     : null;
   const selectedTaskCourse = selectedTask ? courses.find((course) => course.name === selectedTask.course) : undefined;
-  const forecast = selectedCourse ? forecasts[selectedCourse.name] ?? { target: 90, scores: {} } : { target: 90, scores: {} };
-  const forecastItems = (selectedCourse?.grading ?? []).flatMap((category) => {
-    if (category.kind === 'exam') return category.score === null ? [{ key: `exam-${category.name}`, label: category.name, description: `考试 · ${category.weight}%`, score: forecast.scores[`exam-${category.name}`] ?? 80 }] : [];
-    return tasks.filter((task) => task.course === selectedCourse?.name && task.gradeCategory === category.name && task.score === null)
-      .map((task) => ({ key: `task-${task.id}`, label: task.title, description: `${category.name} · 任务`, score: forecast.scores[`task-${task.id}`] ?? 80 }));
-  });
-  const projectedFinal = selectedCourse?.grading.reduce((total, category) => {
-    if (category.kind === 'exam') return total + (category.score ?? forecast.scores[`exam-${category.name}`] ?? 0) * category.weight / 100;
-    const categoryTasks = tasks.filter((task) => task.course === selectedCourse.name && task.gradeCategory === category.name);
-    if (!categoryTasks.length) return total;
-    const average = categoryTasks.reduce((sum, task) => sum + (task.score ?? forecast.scores[`task-${task.id}`] ?? 0), 0) / categoryTasks.length;
-    return total + average * category.weight / 100;
-  }, 0) ?? null;
   const weekDays = [{ label: '周一', value: 1 }, { label: '周二', value: 2 }, { label: '周三', value: 3 }, { label: '周四', value: 4 }, { label: '周五', value: 5 }, { label: '周六', value: 6 }, { label: '周日', value: 0 }];
   const calendarItems = calendarMode === 'course' ? weeklyCourses : weeklyAssignments;
   const today = new Date().getDay();
@@ -723,7 +692,7 @@ export default function Page() {
       <aside><div className="aside-title"><p>筛选</p><button onClick={openCourseForm}>＋ 课程</button></div><button className={filter === '全部' ? 'selected' : ''} onClick={() => setFilter('全部')}>全部<span>{tasks.length}</span></button><button className={filter === '待完成' ? 'selected' : ''} onClick={() => setFilter('待完成')}>待完成<span>{active.length}</span></button>{courses.map((course) => <div className="course-nav-row" key={course.name}><button className={filter === course.name ? 'selected' : ''} onClick={() => setFilter(course.name)}>{course.name}<span>{tasks.filter((task) => task.course === course.name).length}</span></button>{course.name !== UNASSIGNED && <button className="course-settings" aria-label={`设置 ${course.name}`} title={`设置 ${course.name}`} onClick={() => editCourse(course)}>⚙</button>}</div>)}</aside>
       <div className="list"><div className="list-head"><div><p className="eyebrow">作业清单</p><h2>{filter}</h2></div><span>{shown.length} 项</span></div>
       <div className="category-filters"><button className={categoryFilter === '全部类别' ? 'selected' : ''} onClick={() => setCategoryFilter('全部类别')}>全部类别</button>{categoryFilters.map((category) => <button key={category} className={categoryFilter === category ? 'selected' : ''} onClick={() => setCategoryFilter(category)}>{category}</button>)}</div>
-      {selectedCourse && selectedCourse.grading.length > 0 && <><section className="course-grade-panel"><div className="course-grade-total"><span>当前课程成绩</span><strong>{currentCourseGrade === null ? '—' : `${currentCourseGrade.toFixed(1)}%`}</strong><small>按已有成绩计算</small></div><div className="category-averages">{categoryStats.map((category) => <div key={category.name}><span>{category.name}<small>{category.kind === 'exam' ? '考试' : '任务'} · {category.weight}% · {category.gradedCount} 项已评分</small></span>{category.kind === 'exam' ? <div className="exam-score"><input aria-label={`${category.name} 考试成绩`} type="number" min="0" max="100" step="0.1" value={category.score ?? ''} onChange={(event) => setExamScore(selectedCourse.name, category.name, event.target.value)} placeholder="输入成绩" /><span>%</span></div> : <strong>{category.average === null ? '—' : `${category.average.toFixed(1)}%`}</strong>}</div>)}</div></section><section className="grade-planner"><div className="planner-heading"><div><p className="eyebrow">成绩预测</p><h3>目标最终分数</h3></div><div className="target-score"><input aria-label="目标最终分数" type="range" min="0" max="100" step="0.1" value={forecast.target} onChange={(event) => updateForecast(selectedCourse.name, (current) => ({ ...current, target: Number(event.target.value) }))} /><strong>{forecast.target.toFixed(1)}%</strong></div></div><div className="planner-summary"><span>按预测计算</span><strong>{projectedFinal === null ? '—' : `${projectedFinal.toFixed(1)}%`}</strong><small className={projectedFinal !== null && projectedFinal >= forecast.target ? 'on-track' : ''}>{projectedFinal !== null && projectedFinal >= forecast.target ? '预计达到目标' : '还需要提升预测分数'}</small></div>{forecastItems.length ? <div className="forecast-items">{forecastItems.map((item) => <label key={item.key}><span><strong>{item.label}</strong><small>{item.description}</small></span><input aria-label={`${item.label} 预测成绩`} type="range" min="0" max="100" step="0.1" value={item.score} onChange={(event) => updateForecast(selectedCourse.name, (current) => ({ ...current, scores: { ...current.scores, [item.key]: Number(event.target.value) } }))} /><output>{item.score.toFixed(1)}%</output></label>)}</div> : <p className="planner-empty">没有等待评分的考试或作业；添加项目后可在这里预测成绩。</p>}</section></>}
+      {selectedCourse && selectedCourse.grading.length > 0 && <section className="course-grade-panel"><div className="course-grade-total"><span>当前课程成绩</span><strong>{currentCourseGrade === null ? '—' : `${currentCourseGrade.toFixed(1)}%`}</strong><small>按已有成绩计算</small></div><div className="category-averages">{categoryStats.map((category) => <div key={category.name}><span>{category.name}<small>{category.kind === 'exam' ? '考试' : '任务'} · {category.weight}% · {category.gradedCount} 项已评分</small></span>{category.kind === 'exam' ? <div className="exam-score"><input aria-label={`${category.name} 考试成绩`} type="number" min="0" max="100" step="0.1" value={category.score ?? ''} onChange={(event) => setExamScore(selectedCourse.name, category.name, event.target.value)} placeholder="输入成绩" /><span>%</span></div> : <strong>{category.average === null ? '—' : `${category.average.toFixed(1)}%`}</strong>}</div>)}</div></section>}
       {shown.length ? shown.map((task) => <article className={`task ${task.done ? 'done' : ''}`} key={task.id}>
         <button className="check" aria-label={`标记 ${task.title} 完成`} onClick={() => setTasks(tasks.map((item) => item.id === task.id ? { ...item, done: !item.done } : item))}>{task.done && '✓'}</button>
         <button className="task-open" onClick={() => setSelectedTask(task)}><h3>{task.title}</h3><p>{task.course}{task.gradeCategory && <><b>·</b><span className="grade-category">{task.gradeCategory}</span></>} <b>·</b> {formatDate(task.due)}{task.score !== null && <><b>·</b><span className="task-score">{task.score}%</span></>}{task.notes && <><b>·</b><span className="has-notes">有备注</span></>}{task.source === 'mock' && <><b>·</b><span className="canvas-source">Canvas 模拟</span></>}</p></button>
