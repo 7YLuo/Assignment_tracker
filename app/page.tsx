@@ -284,11 +284,17 @@ export default function Page() {
   async function submitAuth(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     if (!supabase) return;
+    const identifier = authEmail.trim();
+    if (authMode === 'signup' && !identifier.includes('@')) {
+      setAuthMessage('注册新账户时请使用真实邮箱；测试账号可以直接输入登录名。');
+      return;
+    }
+    const email = identifier.includes('@') ? identifier : `${identifier.toLocaleLowerCase()}@assignment-tracker.local`;
     setAuthBusy(true);
     setAuthMessage('');
     const result = authMode === 'signin'
-      ? await supabase.auth.signInWithPassword({ email: authEmail.trim(), password: authPassword })
-      : await supabase.auth.signUp({ email: authEmail.trim(), password: authPassword, options: { emailRedirectTo: window.location.href } });
+      ? await supabase.auth.signInWithPassword({ email, password: authPassword })
+      : await supabase.auth.signUp({ email, password: authPassword, options: { emailRedirectTo: window.location.href } });
     setAuthBusy(false);
     if (result.error) {
       setAuthMessage(result.error.message);
@@ -678,7 +684,7 @@ export default function Page() {
       <div className="auth-brand"><span className="mark">D</span><strong>deadline</strong></div>
       <div><p className="eyebrow">{authMode === 'signin' ? 'Welcome back' : 'Create account'}</p><h1>{authMode === 'signin' ? '登录你的学习空间' : '创建学习空间'}</h1><p>每个账户的数据相互隔离，并自动同步到云端。</p></div>
       <form className="auth-form" onSubmit={submitAuth}>
-        <label>邮箱<input type="email" autoComplete="email" required value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} placeholder="you@example.com" /></label>
+        <label>{authMode === 'signin' ? '邮箱或测试账号' : '邮箱'}<input type={authMode === 'signin' ? 'text' : 'email'} autoComplete="username" required value={authEmail} onChange={(event) => setAuthEmail(event.target.value)} placeholder={authMode === 'signin' ? 'you@example.com 或 test1' : 'you@example.com'} /></label>
         <label>密码<input type="password" autoComplete={authMode === 'signin' ? 'current-password' : 'new-password'} minLength={6} required value={authPassword} onChange={(event) => setAuthPassword(event.target.value)} placeholder="至少 6 位" /></label>
         {authMessage && <p className="auth-message" role="status">{authMessage}</p>}
         <button className="add" disabled={authBusy}>{authBusy ? '请稍候…' : authMode === 'signin' ? '登录' : '注册'}</button>
