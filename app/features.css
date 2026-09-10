@@ -113,11 +113,13 @@
 .metrics { grid-template-columns: repeat(2, 1fr); gap: 14px; }
 .metrics article { min-width: 0; padding: 17px 18px; }
 .metrics strong { font-size: 32px; }
-.task-open { display: block; border: 0; background: transparent; padding: 0; text-align: left; color: inherit; }
+.task-open { width: 100%; min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) max-content; align-items: center; gap: 22px; border: 0; background: transparent; padding: 0; text-align: left; color: inherit; }
 .task-open:hover h3 { color: #d95738; }
 .task { grid-template-columns: 30px 1fr 25px; }
-.grade-category { color: #695c9b; }
-.task-score { color: #4e6f50; font-weight: 600; }
+.task-summary { min-width: 0; display: block; }
+.task-summary h3, .task-summary p { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.task-due { justify-self: end; color: #817a72; font-size: 12px; white-space: nowrap; }
+.done .task-due { color: #aaa39a; text-decoration: line-through; }
 .course-grade-panel { display: grid; grid-template-columns: 165px 1fr; gap: 22px; padding: 20px 24px; background: #f0ebe2; border-bottom: 1px solid #e2dbd0; }
 .course-grade-total { display: grid; align-content: center; }
 .course-grade-total > span { color: #6f685f; font-size: 12px; }
