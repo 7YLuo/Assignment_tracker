@@ -3,7 +3,7 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Session } from '@supabase/supabase-js';
 import { fetchMockCanvasImport, mockCanvasAssignmentCount, mockCanvasCourses } from './canvas-import';
-import { isSyllabusImportResult, syllabusExternalId, type SyllabusImportResult } from './syllabus-import';
+import { extractCourseCode, isSyllabusImportResult, syllabusExternalId, type SyllabusImportResult } from './syllabus-import';
 import { supabase, supabaseConfigured } from './supabase';
 
 type DataSource = 'manual' | 'mock' | 'canvas' | 'syllabus';
@@ -62,7 +62,6 @@ function normalizeWeeklyItems(value: unknown) {
 
 const seed: Task[] = [];
 const seedCourses: Course[] = [];
-const UNASSIGNED = '未分类';
 const formatDate = (date: string | null) => date ? new Intl.DateTimeFormat('zh-CN', { month: 'short', day: 'numeric', weekday: 'short', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(date)) : '时间待定';
 const dueSortValue = (date: string | null) => date ? new Date(date).getTime() : Number.POSITIVE_INFINITY;
 const blankGradeRows = (): GradeRow[] => [{ id: Date.now(), name: '', weight: '', kind: 'task' }, { id: Date.now() + 1, name: '', weight: '', kind: 'task' }];
@@ -70,7 +69,7 @@ const taskCategoriesFor = (course: Course | undefined) => (course?.grading ?? []
 
 function normalizeDataBundle(value: unknown): DataBundle {
   const raw = value && typeof value === 'object' ? value as Partial<DataBundle> : {};
-  const tasks = Array.isArray(raw.tasks) ? raw.tasks.map((task) => ({
+  const tasks = (Array.isArray(raw.tasks) ? raw.tasks.map((task) => ({
     ...task,
     due: task.due === null ? null : typeof task.due === 'string' && task.due.includes('T') ? task.due : `${task.due || new Date().toISOString().slice(0, 10)}T23:59`,
     notes: task.notes ?? '',
@@ -78,15 +77,15 @@ function normalizeDataBundle(value: unknown): DataBundle {
     score: typeof task.score === 'number' ? task.score : null,
     source: task.source === 'canvas' || task.source === 'mock' || task.source === 'syllabus' ? task.source : 'manual' as const,
     externalId: typeof task.externalId === 'string' ? task.externalId : null,
-  })) : [];
-  const courses = Array.isArray(raw.courses) ? (raw.courses as Array<string | Course>).map((course) => typeof course === 'string'
+  })) : []).filter((task) => task.course !== '未分类');
+  const courses = (Array.isArray(raw.courses) ? (raw.courses as Array<string | Course>).map((course) => typeof course === 'string'
     ? { name: course, grading: [], source: 'manual' as const, externalId: null }
     : {
         name: course.name,
         grading: Array.isArray(course.grading) ? course.grading.map((category) => ({ ...category, kind: category.kind === 'exam' ? 'exam' as const : 'task' as const, score: typeof category.score === 'number' ? category.score : null })) : [],
         source: course.source === 'canvas' || course.source === 'mock' || course.source === 'syllabus' ? course.source : 'manual' as const,
         externalId: typeof course.externalId === 'string' ? course.externalId : null,
-      }) : [];
+      }) : []).filter((course) => course.name !== '未分类');
   for (const name of tasks.map((task) => task.course)) {
     if (name && !courses.some((course) => course.name === name)) courses.push({ name, grading: [], source: 'manual', externalId: null });
   }
@@ -434,8 +433,10 @@ export default function Page() {
       });
       if (error) throw error;
       if (data?.error) throw new Error(data.error);
-      if (!isSyllabusImportResult(data) || !data.courseName.trim()) throw new Error('AI 没有识别到有效的课程名称，请补充文字后重试。');
-      setSyllabusResult(data);
+      if (!isSyllabusImportResult(data)) throw new Error('AI 没有返回有效的课程信息，请补充文字后重试。');
+      const courseCode = extractCourseCode(data.courseName);
+      if (!courseCode) throw new Error('AI 没有识别到明确课号（例如 MATH 217），请在文字中补充课号后重试。');
+      setSyllabusResult({ ...data, courseName: courseCode });
       setIncludeTbdAssignments(false);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'AI 分析失败，请稍后重试。';
@@ -603,18 +604,16 @@ export default function Page() {
   }
 
   function deleteCourse(course: string) {
-    if (course === UNASSIGNED) return;
     const affected = tasks.filter((task) => task.course === course).length;
     const message = affected
-      ? `删除“${course}”吗？其中 ${affected} 项作业会保留并移到“${UNASSIGNED}”。`
+      ? `删除“${course}”吗？其中 ${affected} 项作业也会同时删除。`
       : `删除“${course}”吗？`;
     if (!window.confirm(message)) return;
     const remaining = courses.filter((item) => item.name !== course);
-    const nextCourses = affected && !remaining.some((item) => item.name === UNASSIGNED) ? [...remaining, { name: UNASSIGNED, grading: [], source: 'manual' as const, externalId: null }] : remaining;
-    if (affected) setTasks(tasks.map((task) => task.course === course ? { ...task, course: UNASSIGNED, gradeCategory: '' } : task));
-    setCourses(nextCourses);
-    setFilter(affected ? UNASSIGNED : '全部');
-    setDraft((current) => ({ ...current, course: current.course === course ? (nextCourses[0]?.name ?? '') : current.course }));
+    if (affected) setTasks(tasks.filter((task) => task.course !== course));
+    setCourses(remaining);
+    setFilter('全部');
+    setDraft((current) => ({ ...current, course: current.course === course ? (remaining[0]?.name ?? '') : current.course }));
   }
 
   function saveSelectedTaskGrade() {
@@ -665,7 +664,7 @@ export default function Page() {
   }
 
   function openCalendarForm(weekday: number) {
-    const defaultCourse = courses.find((course) => course.name !== UNASSIGNED)?.name ?? '';
+    const defaultCourse = courses[0]?.name ?? '';
     setEditingCalendarItemId(null);
     setCalendarDraft({ weekday: String(weekday), title: '', time: calendarMode === 'course' ? '09:00' : '', endTime: calendarMode === 'course' ? '10:00' : '', kind: calendarMode === 'course' ? '课程' : '任务', course: calendarMode === 'course' ? defaultCourse : '', location: '' });
     setCalendarError('');
@@ -817,7 +816,7 @@ export default function Page() {
       </section>
     </section>
     <section className="workspace">
-      <aside><div className="aside-title"><p>筛选</p><button onClick={openCourseForm}>＋ 课程</button></div><button className={filter === '全部' ? 'selected' : ''} onClick={() => setFilter('全部')}>全部<span>{tasks.length}</span></button><button className={filter === '待完成' ? 'selected' : ''} onClick={() => setFilter('待完成')}>待完成<span>{active.length}</span></button>{courses.map((course) => <div className="course-nav-row" key={course.name}><button className={filter === course.name ? 'selected' : ''} onClick={() => setFilter(course.name)}>{course.name}<span>{tasks.filter((task) => task.course === course.name).length}</span></button>{course.name !== UNASSIGNED && <button className="course-settings" aria-label={`设置 ${course.name}`} title={`设置 ${course.name}`} onClick={() => editCourse(course)}>⚙</button>}</div>)}</aside>
+      <aside><div className="aside-title"><p>筛选</p><button onClick={openCourseForm}>＋ 课程</button></div><button className={filter === '全部' ? 'selected' : ''} onClick={() => setFilter('全部')}>全部<span>{tasks.length}</span></button><button className={filter === '待完成' ? 'selected' : ''} onClick={() => setFilter('待完成')}>待完成<span>{active.length}</span></button>{courses.map((course) => <div className="course-nav-row" key={course.name}><button className={filter === course.name ? 'selected' : ''} onClick={() => setFilter(course.name)}>{course.name}<span>{tasks.filter((task) => task.course === course.name).length}</span></button><button className="course-settings" aria-label={`设置 ${course.name}`} title={`设置 ${course.name}`} onClick={() => editCourse(course)}>⚙</button></div>)}</aside>
       <div className="list"><div className="list-head"><div><p className="eyebrow">作业清单</p><h2>{filter}</h2></div><span>{shown.length} 项</span></div>
       <div className="category-filters"><button className={categoryFilter === '全部类别' ? 'selected' : ''} onClick={() => setCategoryFilter('全部类别')}>全部类别</button>{categoryFilters.map((category) => <button key={category} className={categoryFilter === category ? 'selected' : ''} onClick={() => setCategoryFilter(category)}>{category}</button>)}</div>
       {selectedCourse && selectedCourse.grading.length > 0 && <section className="course-grade-panel"><div className="course-grade-total"><span>当前课程成绩</span><strong>{currentCourseGrade === null ? '—' : `${currentCourseGrade.toFixed(1)}%`}</strong><small>按已有成绩计算</small></div><div className="category-averages">{categoryStats.map((category) => <div key={category.name}><span>{category.name}<small>{category.kind === 'exam' ? '考试' : '任务'} · {category.weight}% · {category.gradedCount} 项已评分</small></span>{category.kind === 'exam' ? <div className="exam-score"><input aria-label={`${category.name} 考试成绩`} type="number" min="0" max="100" step="0.1" value={category.score ?? ''} onChange={(event) => setExamScore(selectedCourse.name, category.name, event.target.value)} placeholder="输入成绩" /><span>%</span></div> : <strong>{category.average === null ? '—' : `${category.average.toFixed(1)}%`}</strong>}</div>)}</div></section>}
@@ -841,7 +840,7 @@ export default function Page() {
       </> : <div className="syllabus-review">
         <div className="syllabus-review-summary"><div><small>识别到课程</small><h3>{syllabusResult.courseName}</h3></div><span>{syllabusDatedCount} 项有时间</span></div>
         <section><div className="review-section-head"><strong>评分结构</strong><small>{syllabusResult.grading.length} 类</small></div>{syllabusResult.grading.length ? <div className="review-chips">{syllabusResult.grading.map((category) => <span key={`${category.name}-${category.kind}`}>{category.name}<small>{category.kind === 'exam' ? '考试' : '任务'} · {category.weight === null ? '比例待定' : `${category.weight}%`}</small></span>)}</div> : <p className="review-empty">没有识别到评分结构，可导入后手动补充。</p>}</section>
-        <section><div className="review-section-head"><strong>作业与考试</strong><small>{syllabusResult.assignments.length} 项</small></div><div className="review-assignment-list">{syllabusResult.assignments.map((assignment, index) => <article key={`${assignment.title}-${index}`}><div><strong>{assignment.title}</strong><small>{assignment.category || '未分类'}</small></div><time className={!assignment.dueAt ? 'tbd' : ''}>{formatDate(assignment.dueAt)}</time></article>)}</div></section>
+        <section><div className="review-section-head"><strong>作业与考试</strong><small>{syllabusResult.assignments.length} 项</small></div><div className="review-assignment-list">{syllabusResult.assignments.map((assignment, index) => <article key={`${assignment.title}-${index}`}><div><strong>{assignment.title}</strong>{assignment.category && <small>{assignment.category}</small>}</div><time className={!assignment.dueAt ? 'tbd' : ''}>{formatDate(assignment.dueAt)}</time></article>)}</div></section>
         {syllabusTbdCount > 0 && <label className="tbd-choice"><input type="checkbox" checked={includeTbdAssignments} onChange={(event) => setIncludeTbdAssignments(event.target.checked)} /><span><strong>同时添加 {syllabusTbdCount} 项时间待定的作业</strong><small>它们会排在有截止时间的项目之后，之后可以手动补充日期。</small></span></label>}
         {syllabusResult.warnings.length > 0 && <details className="syllabus-warnings"><summary>{syllabusResult.warnings.length} 条需要确认的信息</summary><ul>{syllabusResult.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul></details>}
       </div>}
@@ -880,9 +879,9 @@ export default function Page() {
 
     {calendarFormOpen && <div className="modal-backdrop" onMouseDown={closeCalendarForm}><form className="modal calendar-modal" onSubmit={saveCalendarItem} onMouseDown={(event) => event.stopPropagation()}>
       <div><p className="eyebrow">每周安排</p><h2>{editingCalendarItemId !== null ? '编辑安排' : calendarMode === 'course' ? '添加课程或任务' : '添加每周任务'}</h2></div>
-      <div className="row"><label>星期<select value={calendarDraft.weekday} onChange={(event) => setCalendarDraft({ ...calendarDraft, weekday: event.target.value })}>{weekDays.map((day) => <option key={day.value} value={day.value}>{day.label}</option>)}</select></label>{calendarMode === 'course' && <label>类型<select value={calendarDraft.kind} onChange={(event) => { const kind = event.target.value as '课程' | '任务'; const defaultCourse = courses.find((course) => course.name !== UNASSIGNED)?.name ?? ''; setCalendarDraft({ ...calendarDraft, kind, time: kind === '课程' ? calendarDraft.time || '09:00' : calendarDraft.time, endTime: kind === '课程' ? calendarDraft.endTime || addMinutesToTime(calendarDraft.time || '09:00', 60) : '', course: kind === '课程' ? calendarDraft.course || defaultCourse : '' }); setCalendarError(''); }}><option>课程</option><option>任务</option></select></label>}</div>
+      <div className="row"><label>星期<select value={calendarDraft.weekday} onChange={(event) => setCalendarDraft({ ...calendarDraft, weekday: event.target.value })}>{weekDays.map((day) => <option key={day.value} value={day.value}>{day.label}</option>)}</select></label>{calendarMode === 'course' && <label>类型<select value={calendarDraft.kind} onChange={(event) => { const kind = event.target.value as '课程' | '任务'; const defaultCourse = courses[0]?.name ?? ''; setCalendarDraft({ ...calendarDraft, kind, time: kind === '课程' ? calendarDraft.time || '09:00' : calendarDraft.time, endTime: kind === '课程' ? calendarDraft.endTime || addMinutesToTime(calendarDraft.time || '09:00', 60) : '', course: kind === '课程' ? calendarDraft.course || defaultCourse : '' }); setCalendarError(''); }}><option>课程</option><option>任务</option></select></label>}</div>
       <label>{calendarMode === 'course' ? '课程或任务名称' : '任务名称'}<input autoFocus required value={calendarDraft.title} onChange={(event) => setCalendarDraft({ ...calendarDraft, title: event.target.value })} placeholder={calendarMode === 'course' ? '例如：STAT 101 Lecture' : '例如：复习本周笔记'} /></label>
-      {calendarMode === 'course' && calendarDraft.kind === '课程' && <label>所属课程（决定颜色）<select value={calendarDraft.course} onChange={(event) => setCalendarDraft({ ...calendarDraft, course: event.target.value })}><option value="">独立安排（按名称配色）</option>{courses.filter((course) => course.name !== UNASSIGNED).map((course) => <option key={course.name} value={course.name}>{course.name}</option>)}</select><small className="field-hint">Lecture、Lab 等不同安排选择同一门课程后会保持相同颜色。</small></label>}
+      {calendarMode === 'course' && calendarDraft.kind === '课程' && <label>所属课程（决定颜色）<select value={calendarDraft.course} onChange={(event) => setCalendarDraft({ ...calendarDraft, course: event.target.value })}><option value="">独立安排（按名称配色）</option>{courses.map((course) => <option key={course.name} value={course.name}>{course.name}</option>)}</select><small className="field-hint">Lecture、Lab 等不同安排选择同一门课程后会保持相同颜色。</small></label>}
       {calendarMode === 'course' && calendarDraft.kind === '课程' && <label>上课地点（可选）<input value={calendarDraft.location} onChange={(event) => setCalendarDraft({ ...calendarDraft, location: event.target.value })} placeholder="例如：Mason Hall 2306" /></label>}
       {calendarMode === 'course' && calendarDraft.kind === '课程' ? <div className="row"><label>开始时间<input type="time" required value={calendarDraft.time} onChange={(event) => { const time = event.target.value; setCalendarDraft({ ...calendarDraft, time, endTime: !calendarDraft.endTime || timeToMinutes(calendarDraft.endTime) <= timeToMinutes(time) ? addMinutesToTime(time, 60) : calendarDraft.endTime }); setCalendarError(''); }} /></label><label>结束时间<input type="time" required value={calendarDraft.endTime} onChange={(event) => { setCalendarDraft({ ...calendarDraft, endTime: event.target.value }); setCalendarError(''); }} /></label></div> : <label>时间（可选）<input type="time" value={calendarDraft.time} onChange={(event) => setCalendarDraft({ ...calendarDraft, time: event.target.value })} /></label>}
       {calendarError && <p className="form-error">{calendarError}</p>}
@@ -908,7 +907,7 @@ export default function Page() {
       <label>课程名称<input autoFocus required value={courseName} onChange={(event) => { setCourseName(event.target.value); setGradeError(''); }} placeholder="例如：History 201" /></label>
       <div className="grading-editor"><div className="grading-head"><span>评分分布</span><strong className={gradeRows.some((row) => row.name || row.weight) && Math.abs(gradeTotal - 100) > 0.001 ? 'total-warning' : ''}>合计 {gradeTotal}%</strong></div>{gradeRows.map((row) => <div className="grade-row" key={row.id}><input aria-label="评分项目名称" value={row.name} onChange={(event) => { setGradeRows(gradeRows.map((item) => item.id === row.id ? { ...item, name: event.target.value } : item)); setGradeError(''); }} placeholder="例如：Midterm" /><select aria-label="评分项目类型" value={row.kind} onChange={(event) => setGradeRows(gradeRows.map((item) => item.id === row.id ? { ...item, kind: event.target.value as 'exam' | 'task' } : item))}><option value="exam">考试</option><option value="task">任务</option></select><div className="weight-input"><input aria-label="评分比例" type="number" min="0.01" max="100" step="0.01" value={row.weight} onChange={(event) => { setGradeRows(gradeRows.map((item) => item.id === row.id ? { ...item, weight: event.target.value } : item)); setGradeError(''); }} placeholder="50" /><span>%</span></div><button type="button" aria-label="删除评分项目" onClick={() => setGradeRows(gradeRows.filter((item) => item.id !== row.id))}>×</button></div>)}<button type="button" className="add-grade" onClick={() => setGradeRows([...gradeRows, { id: Date.now(), name: '', weight: '', kind: 'task' }])}>＋ 添加评分项目</button>{gradeError && <p className="form-error">{gradeError}</p>}</div>
       <button className="add course-save">{editingCourse ? '保存课程修改' : '保存课程'}</button>
-      {courses.length > 0 && <div className="course-list"><p>已有课程</p>{courses.map((course) => <div className="course-row" key={course.name}><div className="course-info"><span><strong>{course.name}</strong><small>{tasks.filter((task) => task.course === course.name).length} 项作业</small></span><p>{course.grading.length ? course.grading.map((item) => `${item.name}（${item.kind === 'exam' ? '考试' : '任务'}） ${item.weight}%`).join(' · ') : '尚未设置评分分布'}</p></div><div className="course-actions"><button type="button" className="course-edit" disabled={course.name === UNASSIGNED} onClick={() => editCourse(course)}>编辑课程</button><button type="button" className="course-delete" disabled={course.name === UNASSIGNED} title={course.name === UNASSIGNED ? '系统分类不能删除' : `删除 ${course.name}`} onClick={() => deleteCourse(course.name)}>{course.name === UNASSIGNED ? '保留' : '删除'}</button></div></div>)}</div>}
+      {courses.length > 0 && <div className="course-list"><p>已有课程</p>{courses.map((course) => <div className="course-row" key={course.name}><div className="course-info"><span><strong>{course.name}</strong><small>{tasks.filter((task) => task.course === course.name).length} 项作业</small></span><p>{course.grading.length ? course.grading.map((item) => `${item.name}（${item.kind === 'exam' ? '考试' : '任务'}） ${item.weight}%`).join(' · ') : '尚未设置评分分布'}</p></div><div className="course-actions"><button type="button" className="course-edit" onClick={() => editCourse(course)}>编辑课程</button><button type="button" className="course-delete" title={`删除 ${course.name}`} onClick={() => deleteCourse(course.name)}>删除</button></div></div>)}</div>}
       <div className="actions"><button type="button" className="plain" onClick={closeCourseForm}>完成</button></div>
     </form></div>}
 

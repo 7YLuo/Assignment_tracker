@@ -33,3 +33,10 @@ export function isSyllabusImportResult(value: unknown): value is SyllabusImportR
 export function syllabusExternalId(courseName: string, title: string, dueAt: string | null) {
   return `syllabus:${courseName}:${title}:${dueAt ?? 'tbd'}`.toLocaleLowerCase().replace(/\s+/g, '-');
 }
+
+export function extractCourseCode(value: string) {
+  const normalized = value.replace(/\u00a0/g, ' ').toLocaleUpperCase();
+  const match = normalized.match(/\b([A-Z]{2,}(?:\s*[&/]\s*[A-Z]{2,})?)\s*[-–—:]?\s*(\d{2,4}[A-Z]?)\b/);
+  if (!match || ['FALL', 'WINTER', 'SPRING', 'SUMMER'].includes(match[1])) return '';
+  return `${match[1].replace(/\s+/g, ' ')} ${match[2]}`;
+}
