@@ -116,9 +116,6 @@
 .task-open { display: block; border: 0; background: transparent; padding: 0; text-align: left; color: inherit; }
 .task-open:hover h3 { color: #d95738; }
 .task { grid-template-columns: 30px 1fr 25px; }
-.has-notes { color: #9a5040; }
-.canvas-source, .canvas-course-source { border-radius: 999px; background: #e7edf5; color: #496789; padding: 2px 6px; font-size: 10px; font-weight: 600; white-space: nowrap; }
-.syllabus-source, .syllabus-course-source { border-radius: 999px; background: #eee5f6; color: #76528d; padding: 2px 6px; font-size: 10px; font-weight: 600; white-space: nowrap; }
 .grade-category { color: #695c9b; }
 .task-score { color: #4e6f50; font-weight: 600; }
 .course-grade-panel { display: grid; grid-template-columns: 165px 1fr; gap: 22px; padding: 20px 24px; background: #f0ebe2; border-bottom: 1px solid #e2dbd0; }

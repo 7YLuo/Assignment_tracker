@@ -265,6 +265,10 @@ export default function Page() {
     return () => window.removeEventListener('keydown', closeOnEscape);
   }, [calendarExpanded]);
 
+  useEffect(() => {
+    setCategoryFilter('全部类别');
+  }, [filter]);
+
   useLayoutEffect(() => {
     if (!calendarExpanded || !calendarPreviewRef.current || !expandedCalendarRef.current) return;
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
@@ -498,7 +502,6 @@ export default function Page() {
     .sort((a, b) => dueSortValue(a.due) - dueSortValue(b.due));
   const now = Date.now();
   const urgent = active.filter((task) => { const due = task.due ? new Date(task.due).getTime() : Number.NaN; return due >= now && due <= now + 24 * 60 * 60 * 1000; }).sort((a, b) => dueSortValue(a.due) - dueSortValue(b.due));
-  const categoryFilters = [...new Set(tasks.map((task) => task.gradeCategory).filter(Boolean))];
   const soon = active.filter((task) => { const due = task.due ? new Date(task.due).getTime() : Number.NaN; return due >= now && due <= now + 7 * 24 * 60 * 60 * 1000; }).length;
   const stats = useMemo(() => ({ total: active.length, soon }), [active.length, soon]);
 
@@ -730,6 +733,11 @@ export default function Page() {
 
   const gradeTotal = gradeRows.reduce((sum, row) => sum + (Number(row.weight) || 0), 0);
   const selectedCourse = courses.find((course) => course.name === filter);
+  const categoryScopeTasks = filter === '全部' ? tasks : filter === '待完成' ? active : tasks.filter((task) => task.course === filter);
+  const categoryFilters = [...new Set([
+    ...(selectedCourse?.grading.filter((category) => category.kind === 'task').map((category) => category.name) ?? []),
+    ...categoryScopeTasks.map((task) => task.gradeCategory).filter(Boolean),
+  ])];
   const categoryStats = (selectedCourse?.grading ?? []).map((category) => {
     if (category.kind === 'exam') return { ...category, average: category.score, gradedCount: category.score === null ? 0 : 1 };
     const graded = tasks.filter((task) => task.course === selectedCourse?.name && task.gradeCategory === category.name && task.score !== null);
@@ -815,7 +823,7 @@ export default function Page() {
       {selectedCourse && selectedCourse.grading.length > 0 && <section className="course-grade-panel"><div className="course-grade-total"><span>当前课程成绩</span><strong>{currentCourseGrade === null ? '—' : `${currentCourseGrade.toFixed(1)}%`}</strong><small>按已有成绩计算</small></div><div className="category-averages">{categoryStats.map((category) => <div key={category.name}><span>{category.name}<small>{category.kind === 'exam' ? '考试' : '任务'} · {category.weight}% · {category.gradedCount} 项已评分</small></span>{category.kind === 'exam' ? <div className="exam-score"><input aria-label={`${category.name} 考试成绩`} type="number" min="0" max="100" step="0.1" value={category.score ?? ''} onChange={(event) => setExamScore(selectedCourse.name, category.name, event.target.value)} placeholder="输入成绩" /><span>%</span></div> : <strong>{category.average === null ? '—' : `${category.average.toFixed(1)}%`}</strong>}</div>)}</div></section>}
       {shown.length ? shown.map((task) => <article className={`task ${task.done ? 'done' : ''}`} key={task.id}>
         <button className="check" aria-label={`标记 ${task.title} 完成`} onClick={() => setTasks(tasks.map((item) => item.id === task.id ? { ...item, done: !item.done } : item))}>{task.done && '✓'}</button>
-        <button className="task-open" onClick={() => setSelectedTask(task)}><h3>{task.title}</h3><p>{task.course}{task.gradeCategory && <><b>·</b><span className="grade-category">{task.gradeCategory}</span></>} <b>·</b> {formatDate(task.due)}{task.score !== null && <><b>·</b><span className="task-score">{task.score}%</span></>}{task.notes && <><b>·</b><span className="has-notes">有备注</span></>}{task.source === 'mock' && <><b>·</b><span className="canvas-source">Canvas 模拟</span></>}{task.source === 'syllabus' && <><b>·</b><span className="syllabus-source">Syllabus</span></>}</p></button>
+        <button className="task-open" onClick={() => setSelectedTask(task)}><h3>{task.title}</h3><p>{task.course}{task.gradeCategory && <><b>·</b><span className="grade-category">{task.gradeCategory}</span></>} <b>·</b> {formatDate(task.due)}{task.score !== null && <><b>·</b><span className="task-score">{task.score}%</span></>}</p></button>
         <button className="delete" aria-label={`删除 ${task.title}`} onClick={() => setTasks(tasks.filter((item) => item.id !== task.id))}>×</button>
       </article>) : <div className="empty">这个分类还没有作业。</div>}</div>
     </section>
@@ -900,7 +908,7 @@ export default function Page() {
       <label>课程名称<input autoFocus required value={courseName} onChange={(event) => { setCourseName(event.target.value); setGradeError(''); }} placeholder="例如：History 201" /></label>
       <div className="grading-editor"><div className="grading-head"><span>评分分布</span><strong className={gradeRows.some((row) => row.name || row.weight) && Math.abs(gradeTotal - 100) > 0.001 ? 'total-warning' : ''}>合计 {gradeTotal}%</strong></div>{gradeRows.map((row) => <div className="grade-row" key={row.id}><input aria-label="评分项目名称" value={row.name} onChange={(event) => { setGradeRows(gradeRows.map((item) => item.id === row.id ? { ...item, name: event.target.value } : item)); setGradeError(''); }} placeholder="例如：Midterm" /><select aria-label="评分项目类型" value={row.kind} onChange={(event) => setGradeRows(gradeRows.map((item) => item.id === row.id ? { ...item, kind: event.target.value as 'exam' | 'task' } : item))}><option value="exam">考试</option><option value="task">任务</option></select><div className="weight-input"><input aria-label="评分比例" type="number" min="0.01" max="100" step="0.01" value={row.weight} onChange={(event) => { setGradeRows(gradeRows.map((item) => item.id === row.id ? { ...item, weight: event.target.value } : item)); setGradeError(''); }} placeholder="50" /><span>%</span></div><button type="button" aria-label="删除评分项目" onClick={() => setGradeRows(gradeRows.filter((item) => item.id !== row.id))}>×</button></div>)}<button type="button" className="add-grade" onClick={() => setGradeRows([...gradeRows, { id: Date.now(), name: '', weight: '', kind: 'task' }])}>＋ 添加评分项目</button>{gradeError && <p className="form-error">{gradeError}</p>}</div>
       <button className="add course-save">{editingCourse ? '保存课程修改' : '保存课程'}</button>
-      {courses.length > 0 && <div className="course-list"><p>已有课程</p>{courses.map((course) => <div className="course-row" key={course.name}><div className="course-info"><span><strong>{course.name}</strong><small>{tasks.filter((task) => task.course === course.name).length} 项作业</small>{course.source === 'mock' && <small className="canvas-course-source">Canvas 模拟</small>}{course.source === 'syllabus' && <small className="syllabus-course-source">Syllabus</small>}</span><p>{course.grading.length ? course.grading.map((item) => `${item.name}（${item.kind === 'exam' ? '考试' : '任务'}） ${item.weight}%`).join(' · ') : '尚未设置评分分布'}</p></div><div className="course-actions"><button type="button" className="course-edit" disabled={course.name === UNASSIGNED} onClick={() => editCourse(course)}>编辑课程</button><button type="button" className="course-delete" disabled={course.name === UNASSIGNED} title={course.name === UNASSIGNED ? '系统分类不能删除' : `删除 ${course.name}`} onClick={() => deleteCourse(course.name)}>{course.name === UNASSIGNED ? '保留' : '删除'}</button></div></div>)}</div>}
+      {courses.length > 0 && <div className="course-list"><p>已有课程</p>{courses.map((course) => <div className="course-row" key={course.name}><div className="course-info"><span><strong>{course.name}</strong><small>{tasks.filter((task) => task.course === course.name).length} 项作业</small></span><p>{course.grading.length ? course.grading.map((item) => `${item.name}（${item.kind === 'exam' ? '考试' : '任务'}） ${item.weight}%`).join(' · ') : '尚未设置评分分布'}</p></div><div className="course-actions"><button type="button" className="course-edit" disabled={course.name === UNASSIGNED} onClick={() => editCourse(course)}>编辑课程</button><button type="button" className="course-delete" disabled={course.name === UNASSIGNED} title={course.name === UNASSIGNED ? '系统分类不能删除' : `删除 ${course.name}`} onClick={() => deleteCourse(course.name)}>{course.name === UNASSIGNED ? '保留' : '删除'}</button></div></div>)}</div>}
       <div className="actions"><button type="button" className="plain" onClick={closeCourseForm}>完成</button></div>
     </form></div>}
 
