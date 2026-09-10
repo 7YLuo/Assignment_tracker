@@ -118,6 +118,7 @@
 .task { grid-template-columns: 30px 1fr 25px; }
 .has-notes { color: #9a5040; }
 .canvas-source, .canvas-course-source { border-radius: 999px; background: #e7edf5; color: #496789; padding: 2px 6px; font-size: 10px; font-weight: 600; white-space: nowrap; }
+.syllabus-source, .syllabus-course-source { border-radius: 999px; background: #eee5f6; color: #76528d; padding: 2px 6px; font-size: 10px; font-weight: 600; white-space: nowrap; }
 .grade-category { color: #695c9b; }
 .task-score { color: #4e6f50; font-weight: 600; }
 .course-grade-panel { display: grid; grid-template-columns: 165px 1fr; gap: 22px; padding: 20px 24px; background: #f0ebe2; border-bottom: 1px solid #e2dbd0; }
@@ -142,6 +143,52 @@
 .modal-copy { color: #7a746c; font-size: 14px; margin: 8px 0 0; }
 .course-modal { width: min(560px, 100%); }
 .canvas-import-modal { width: min(560px, 100%); }
+.syllabus-import-modal { width: min(660px, 100%); }
+.syllabus-import-heading { display: flex; align-items: center; gap: 12px; }
+.syllabus-import-heading .eyebrow { margin-bottom: 5px; }
+.ai-mark { display: grid; place-items: center; width: 38px; height: 38px; flex: 0 0 auto; border-radius: 10px; background: linear-gradient(145deg, #5f4b78, #9c6b97); color: white; font-size: 18px; box-shadow: 0 7px 18px #624c7430; }
+.syllabus-drop { display: flex; align-items: center; gap: 12px; min-height: 80px; border: 1px dashed #cbbfd3; border-radius: 10px; background: #f6f1f7; padding: 12px 14px; }
+.syllabus-drop > span { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 8px; background: #e9dfee; color: #76598a; font-size: 22px; }
+.syllabus-drop > div { min-width: 0; display: grid; flex: 1; gap: 3px; }
+.syllabus-drop strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #4b3c55; font-size: 13px; }
+.syllabus-drop small { color: #83758a; font-size: 11px; line-height: 1.4; }
+.syllabus-drop img { width: 66px; height: 54px; border-radius: 7px; object-fit: cover; border: 1px solid #d8ccdc; }
+.syllabus-drop.has-image button { justify-self: start; border: 0; background: transparent; color: #9a5040; padding: 2px 0; font-size: 11px; }
+.image-picker { flex: 0 0 auto; border: 1px solid #cdbfd3; border-radius: 7px; background: #fff; color: #644d72; padding: 7px 10px; font-size: 11px; font-weight: 600; cursor: pointer; }
+.image-picker input { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+.privacy-note { color: #857d86; font-size: 11px; line-height: 1.5; }
+.syllabus-review { display: grid; gap: 14px; }
+.syllabus-review-summary { display: flex; align-items: center; justify-content: space-between; gap: 16px; border-radius: 10px; background: linear-gradient(135deg, #f0e8f3, #f7f3f5); padding: 14px 16px; }
+.syllabus-review-summary > div { display: grid; gap: 2px; }
+.syllabus-review-summary small { color: #817286; font-size: 11px; }
+.syllabus-review-summary h3 { margin: 0; color: #3e3344; font: 600 21px 'Playfair Display'; }
+.syllabus-review-summary > span { border-radius: 999px; background: #fff; color: #6c5279; padding: 6px 9px; font-size: 11px; white-space: nowrap; }
+.syllabus-review > section { display: grid; gap: 8px; }
+.review-section-head { display: flex; justify-content: space-between; color: #514a52; font-size: 12px; }
+.review-section-head small { color: #918793; }
+.review-chips { display: flex; flex-wrap: wrap; gap: 7px; }
+.review-chips > span { display: grid; gap: 2px; border: 1px solid #ded4e2; border-radius: 8px; background: #fbf9fb; padding: 8px 10px; color: #4c424e; font-size: 12px; font-weight: 600; }
+.review-chips small { color: #897c8d; font-size: 10px; font-weight: 400; }
+.review-empty { margin: 0; color: #8a8189; font-size: 12px; }
+.review-assignment-list { max-height: 230px; overflow: auto; border: 1px solid #e2dce4; border-radius: 9px; }
+.review-assignment-list article { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 10px 12px; border-top: 1px solid #ede8ee; }
+.review-assignment-list article:first-child { border-top: 0; }
+.review-assignment-list article > div { min-width: 0; display: grid; gap: 2px; }
+.review-assignment-list strong { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #423c43; font-size: 12px; }
+.review-assignment-list small { color: #908791; font-size: 10px; }
+.review-assignment-list time { flex: 0 0 auto; color: #655b67; font: 10px 'DM Mono'; }
+.review-assignment-list time.tbd { border-radius: 999px; background: #f3e4d7; color: #9a5c3c; padding: 4px 7px; }
+.tbd-choice { display: flex !important; flex-direction: row !important; align-items: flex-start; gap: 9px !important; border: 1px solid #e7cdb8; border-radius: 9px; background: #fff6ed; padding: 11px 12px; cursor: pointer; }
+.tbd-choice input { width: 16px; height: 16px; margin-top: 2px; accent-color: #c45c3d; }
+.tbd-choice span { display: grid; gap: 3px; }
+.tbd-choice strong { color: #6c4838; font-size: 12px; }
+.tbd-choice small { color: #916e5d; font-size: 10px; line-height: 1.4; }
+.syllabus-warnings { border-radius: 8px; background: #f3efe8; padding: 9px 11px; color: #6f675e; font-size: 11px; }
+.syllabus-warnings summary { cursor: pointer; font-weight: 600; }
+.syllabus-warnings ul { margin: 8px 0 0; padding-left: 18px; line-height: 1.5; }
+.syllabus-message { margin: 0; border-radius: 8px; background: #f5dfd9; color: #9e452f; padding: 10px 12px; font-size: 12px; line-height: 1.45; }
+.syllabus-message.success { background: #e5efe4; color: #49664c; }
+.syllabus-import-modal .add:disabled, .syllabus-import-modal .plain:disabled { cursor: wait; opacity: .55; }
 .canvas-import-heading { display: flex; align-items: center; gap: 12px; }
 .canvas-import-heading .eyebrow { margin-bottom: 5px; }
 .canvas-mark { display: grid; place-items: center; width: 38px; height: 38px; flex: 0 0 auto; border-radius: 10px; background: #d84d3d; color: white; font: 700 20px 'DM Sans'; }
@@ -204,6 +251,8 @@
 
 @media (max-width: 680px) {
   .header-actions .secondary { display: none; }
+  .header-actions .syllabus-trigger { display: inline-flex; padding: 9px 10px; font-size: 0; }
+  .header-actions .syllabus-trigger::after { content: '✦ AI'; font-size: 12px; }
   .header-actions .canvas-sync-trigger { display: inline-flex; padding: 9px 10px; font-size: 0; }
   .header-actions .canvas-sync-trigger::after { content: '↻ C'; font-size: 12px; }
   .header-actions { gap: 4px; }
@@ -231,6 +280,9 @@
   .overview-grid { grid-template-columns: 1fr; padding: 26px 0 22px; }
   .urgent-panel, .calendar-panel { min-height: 150px; }
   .category-filters { padding: 11px 16px; }
+  .syllabus-drop { align-items: flex-start; flex-wrap: wrap; }
+  .image-picker { margin-left: 54px; }
+  .syllabus-review-summary { align-items: flex-start; }
 }
 
 @media (prefers-reduced-motion: reduce) {
