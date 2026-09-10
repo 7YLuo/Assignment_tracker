@@ -121,6 +121,19 @@
 .task-due { justify-self: end; color: #817a72; font-size: 12px; white-space: nowrap; }
 .done .task-due { color: #aaa39a; text-decoration: line-through; }
 .course-grade-panel { display: grid; grid-template-columns: 165px 1fr; gap: 22px; padding: 20px 24px; background: #f0ebe2; border-bottom: 1px solid #e2dbd0; }
+.expected-series-panel { display: grid; gap: 10px; padding: 16px 24px; border-bottom: 1px solid #e5ded4; background: #f7f3ec; }
+.expected-series-heading { display: flex; align-items: end; justify-content: space-between; gap: 14px; }
+.expected-series-heading .eyebrow { margin-bottom: 4px; }
+.expected-series-heading h3 { margin: 0; color: #36322e; font: 600 18px 'Playfair Display'; }
+.expected-series-heading > span { color: #857d74; font-size: 12px; }
+.expected-series-list { display: grid; gap: 8px; }
+.expected-series-list article { display: flex; align-items: center; justify-content: space-between; gap: 16px; border: 1px solid #ded5c8; border-radius: 9px; background: #fffdf9; padding: 11px 12px; }
+.expected-series-copy { min-width: 0; display: grid; gap: 3px; }
+.expected-series-copy strong { color: #443d36; font-size: 13px; }
+.expected-series-copy small, .expected-series-copy p { margin: 0; color: #817970; font-size: 11px; line-height: 1.4; }
+.expected-series-actions { display: flex; align-items: center; gap: 3px; flex: 0 0 auto; }
+.expected-series-actions .secondary { padding: 7px 9px; font-size: 11px; }
+.expected-series-actions .icon-only { width: 30px; padding: 6px; color: #9b6759; font-size: 18px; }
 .course-grade-total { display: grid; align-content: center; }
 .course-grade-total > span { color: #6f685f; font-size: 12px; }
 .course-grade-total > strong { font: 600 34px 'Playfair Display'; margin: 4px 0; }
@@ -177,6 +190,11 @@
 .review-assignment-list small { color: #908791; font-size: 10px; }
 .review-assignment-list time { flex: 0 0 auto; color: #655b67; font: 10px 'DM Mono'; }
 .review-assignment-list time.tbd { border-radius: 999px; background: #f3e4d7; color: #9a5c3c; padding: 4px 7px; }
+.review-series-list { display: grid; gap: 7px; }
+.review-series-list article { display: grid; gap: 5px; border: 1px solid #ded4e2; border-radius: 9px; background: #fbf9fb; padding: 10px 12px; }
+.review-series-list article > div { display: flex; justify-content: space-between; gap: 12px; }
+.review-series-list strong { color: #4c424e; font-size: 12px; }
+.review-series-list small, .review-series-list p { margin: 0; color: #897c8d; font-size: 10px; line-height: 1.45; }
 .tbd-choice { display: flex !important; flex-direction: row !important; align-items: flex-start; gap: 9px !important; border: 1px solid #e7cdb8; border-radius: 9px; background: #fff6ed; padding: 11px 12px; cursor: pointer; }
 .tbd-choice input { width: 16px; height: 16px; margin-top: 2px; accent-color: #c45c3d; }
 .tbd-choice span { display: grid; gap: 3px; }
@@ -265,6 +283,8 @@
   .course-nav-row { flex: 0 0 auto; }
   .course-nav-row > button:first-child { width: auto; white-space: nowrap; }
   .course-grade-panel { grid-template-columns: 1fr; }
+  .expected-series-list article { align-items: flex-start; flex-direction: column; }
+  .expected-series-actions { width: 100%; justify-content: flex-end; }
   .calendar-panel { overflow: auto; }
   .calendar-head { min-width: 620px; }
   .calendar-head-actions { flex-direction: row-reverse; }

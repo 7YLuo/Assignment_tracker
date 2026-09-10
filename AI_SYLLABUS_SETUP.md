@@ -13,4 +13,4 @@ supabase secrets set OPENAI_API_KEY=YOUR_KEY --project-ref lefvekpaqtoyplngsbqu
 supabase functions deploy parse-syllabus --project-ref lefvekpaqtoyplngsbqu
 ```
 
-The function calls the OpenAI Responses API with `store: false`, accepts syllabus text or PNG/JPEG/WebP screenshots, and returns structured course, grading, and assignment data for user review.
+The function calls the OpenAI Responses API with `store: false`, accepts syllabus text or PNG/JPEG/WebP screenshots, and returns structured course, grading, explicit assignment, and expected-series recurrence data for user review. The Edge Function extracts recurrence facts only; the browser application generates each expected assignment date deterministically.

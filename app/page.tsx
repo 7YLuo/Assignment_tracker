@@ -3,16 +3,17 @@
 import React, { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Session } from '@supabase/supabase-js';
 import { fetchMockCanvasImport, mockCanvasAssignmentCount, mockCanvasCourses } from './canvas-import';
-import { extractCourseCode, isSyllabusImportResult, syllabusExternalId, type SyllabusImportResult } from './syllabus-import';
+import { expectedSeriesExternalId, extractCourseCode, formatRecurrenceRule, generateExpectedAssignments, normalizeSyllabusImportResult, syllabusExternalId, type SyllabusImportResult, type SyllabusRecurrenceRule } from './syllabus-import';
 import { supabase, supabaseConfigured } from './supabase';
 
 type DataSource = 'manual' | 'mock' | 'canvas' | 'syllabus';
-type Task = { id: number; title: string; course: string; due: string | null; done: boolean; notes: string; gradeCategory: string; score: number | null; source?: DataSource; externalId?: string | null };
+type Task = { id: number; title: string; course: string; due: string | null; done: boolean; notes: string; gradeCategory: string; score: number | null; source?: DataSource; externalId?: string | null; expectedSeriesId?: string | null };
 type GradeCategory = { name: string; weight: number; kind: 'exam' | 'task'; score: number | null };
 type Course = { name: string; grading: GradeCategory[]; source?: DataSource; externalId?: string | null };
+type ExpectedSeries = { id: string; course: string; title: string; gradeCategory: string; count: number | null; notes: string; recurrence: SyllabusRecurrenceRule | null; courseStartDate: string | null; courseEndDate: string | null; source: 'syllabus' };
 type GradeRow = { id: number; name: string; weight: string; kind: 'exam' | 'task' };
 type WeeklyItem = { id: number; weekday: number; title: string; time: string; endTime?: string; kind: '课程' | '任务'; course?: string; location?: string; color?: string };
-type DataBundle = { format: 'deadline-tracker'; version: 3; savedAt: string; tasks: Task[]; courses: Course[]; weeklyCourses: WeeklyItem[]; weeklyAssignments: WeeklyItem[] };
+type DataBundle = { format: 'deadline-tracker'; version: 4; savedAt: string; tasks: Task[]; courses: Course[]; expectedSeries: ExpectedSeries[]; weeklyCourses: WeeklyItem[]; weeklyAssignments: WeeklyItem[] };
 const COURSE_COLORS = ['#d76648', '#5579a6', '#63856b', '#9a68a0', '#c28a35', '#4f8c91', '#b85f78', '#766ab0', '#8b7657', '#4c8273', '#a85e42', '#6b7fba'];
 
 function timeToMinutes(time: string) {
@@ -62,7 +63,17 @@ function normalizeWeeklyItems(value: unknown) {
 
 const seed: Task[] = [];
 const seedCourses: Course[] = [];
-const formatDate = (date: string | null) => date ? new Intl.DateTimeFormat('zh-CN', { month: 'short', day: 'numeric', weekday: 'short', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(date)) : '时间待定';
+const formatDate = (date: string | null) => {
+  if (!date) return '时间待定';
+  const dateOnly = /^\d{4}-\d{2}-\d{2}$/.test(date);
+  const value = new Date(dateOnly ? `${date}T12:00:00` : date);
+  return new Intl.DateTimeFormat('zh-CN', dateOnly
+    ? { month: 'short', day: 'numeric', weekday: 'short' }
+    : { month: 'short', day: 'numeric', weekday: 'short', hour: '2-digit', minute: '2-digit', hour12: false }).format(value);
+};
+const dueDatePart = (due: string | null) => due?.slice(0, 10) ?? '';
+const dueTimePart = (due: string | null) => due?.includes('T') ? due.slice(11, 16) : '';
+const combineDueParts = (date: string, time: string) => date ? `${date}${time ? `T${time}` : ''}` : null;
 const dueSortValue = (date: string | null) => date ? new Date(date).getTime() : Number.POSITIVE_INFINITY;
 const blankGradeRows = (): GradeRow[] => [{ id: Date.now(), name: '', weight: '', kind: 'task' }, { id: Date.now() + 1, name: '', weight: '', kind: 'task' }];
 const taskCategoriesFor = (course: Course | undefined) => (course?.grading ?? []).filter((category) => category.kind === 'task');
@@ -71,12 +82,13 @@ function normalizeDataBundle(value: unknown): DataBundle {
   const raw = value && typeof value === 'object' ? value as Partial<DataBundle> : {};
   const tasks = (Array.isArray(raw.tasks) ? raw.tasks.map((task) => ({
     ...task,
-    due: task.due === null ? null : typeof task.due === 'string' && task.due.includes('T') ? task.due : `${task.due || new Date().toISOString().slice(0, 10)}T23:59`,
+    due: task.due === null ? null : typeof task.due === 'string' && /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2})?$/.test(task.due) ? task.due : `${new Date().toISOString().slice(0, 10)}T23:59`,
     notes: task.notes ?? '',
     gradeCategory: task.gradeCategory ?? '',
     score: typeof task.score === 'number' ? task.score : null,
     source: task.source === 'canvas' || task.source === 'mock' || task.source === 'syllabus' ? task.source : 'manual' as const,
     externalId: typeof task.externalId === 'string' ? task.externalId : null,
+    expectedSeriesId: typeof task.expectedSeriesId === 'string' ? task.expectedSeriesId : null,
   })) : []).filter((task) => task.course !== '未分类');
   const courses = (Array.isArray(raw.courses) ? (raw.courses as Array<string | Course>).map((course) => typeof course === 'string'
     ? { name: course, grading: [], source: 'manual' as const, externalId: null }
@@ -91,10 +103,25 @@ function normalizeDataBundle(value: unknown): DataBundle {
   }
   return {
     format: 'deadline-tracker',
-    version: 3,
+    version: 4,
     savedAt: typeof raw.savedAt === 'string' ? raw.savedAt : new Date().toISOString(),
     tasks,
     courses,
+    expectedSeries: Array.isArray(raw.expectedSeries) ? raw.expectedSeries.filter((series) => series && typeof series === 'object').map((rawSeries) => {
+      const series = rawSeries as Partial<ExpectedSeries>;
+      return {
+        id: typeof series.id === 'string' ? series.id : `series-${Date.now()}-${Math.random()}`,
+        course: typeof series.course === 'string' ? series.course : '',
+        title: typeof series.title === 'string' ? series.title : 'Expected assignment',
+        gradeCategory: typeof series.gradeCategory === 'string' ? series.gradeCategory : '',
+        count: typeof series.count === 'number' && series.count > 0 ? Math.floor(series.count) : null,
+        notes: typeof series.notes === 'string' ? series.notes : '',
+        recurrence: series.recurrence && (series.recurrence.frequency === 'weekly' || series.recurrence.frequency === 'biweekly') ? series.recurrence : null,
+        courseStartDate: typeof series.courseStartDate === 'string' ? series.courseStartDate : null,
+        courseEndDate: typeof series.courseEndDate === 'string' ? series.courseEndDate : null,
+        source: 'syllabus' as const,
+      };
+    }).filter((series) => series.course && series.course !== '未分类') : [],
     weeklyCourses: normalizeWeeklyItems(raw.weeklyCourses),
     weeklyAssignments: normalizeWeeklyItems(raw.weeklyAssignments),
   };
@@ -130,6 +157,7 @@ function imageFileToDataUrl(file: File) {
 export default function Page() {
   const [tasks, setTasks] = useState<Task[]>(seed);
   const [courses, setCourses] = useState<Course[]>(seedCourses);
+  const [expectedSeries, setExpectedSeries] = useState<ExpectedSeries[]>([]);
   const [storageReady, setStorageReady] = useState(false);
   const [session, setSession] = useState<Session | null>(null);
   const [authReady, setAuthReady] = useState(false);
@@ -171,9 +199,9 @@ export default function Page() {
   const [gradeRows, setGradeRows] = useState<GradeRow[]>([{ id: 1, name: '', weight: '', kind: 'task' }, { id: 2, name: '', weight: '', kind: 'task' }]);
   const [gradeError, setGradeError] = useState('');
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
-  const [draft, setDraft] = useState<{ title: string; course: string; due: string; notes: string; gradeCategory: string; score: string }>({ title: '', course: '', due: `${new Date().toISOString().slice(0, 10)}T23:59`, notes: '', gradeCategory: '', score: '' });
+  const [draft, setDraft] = useState<{ title: string; course: string; due: string; notes: string; gradeCategory: string; score: string; expectedSeriesId: string }>({ title: '', course: '', due: `${new Date().toISOString().slice(0, 10)}T23:59`, notes: '', gradeCategory: '', score: '', expectedSeriesId: '' });
   const [batchDraft, setBatchDraft] = useState({ title: 'Weekly Assignment', course: '', gradeCategory: '', weekday: '1', dueTime: '23:59', startDate: new Date().toISOString().slice(0, 10), endDate: new Date(new Date().setMonth(new Date().getMonth() + 4)).toISOString().slice(0, 10), notes: '' });
-  const dataBundle = useMemo<DataBundle>(() => ({ format: 'deadline-tracker', version: 3, savedAt: new Date().toISOString(), tasks, courses, weeklyCourses, weeklyAssignments }), [tasks, courses, weeklyCourses, weeklyAssignments]);
+  const dataBundle = useMemo<DataBundle>(() => ({ format: 'deadline-tracker', version: 4, savedAt: new Date().toISOString(), tasks, courses, expectedSeries, weeklyCourses, weeklyAssignments }), [tasks, courses, expectedSeries, weeklyCourses, weeklyAssignments]);
 
   useEffect(() => {
     if (!supabaseConfigured || !supabase) {
@@ -287,6 +315,7 @@ export default function Page() {
   function applyDataBundle(bundle: DataBundle) {
     setTasks(bundle.tasks);
     setCourses(bundle.courses);
+    setExpectedSeries(bundle.expectedSeries);
     setWeeklyCourses(bundle.weeklyCourses);
     setWeeklyAssignments(bundle.weeklyAssignments);
     setSelectedTask(null);
@@ -433,10 +462,11 @@ export default function Page() {
       });
       if (error) throw error;
       if (data?.error) throw new Error(data.error);
-      if (!isSyllabusImportResult(data)) throw new Error('AI 没有返回有效的课程信息，请补充文字后重试。');
-      const courseCode = extractCourseCode(data.courseName);
+      const normalizedResult = normalizeSyllabusImportResult(data);
+      if (!normalizedResult) throw new Error('AI 没有返回有效的课程信息，请补充文字后重试。');
+      const courseCode = extractCourseCode(normalizedResult.courseName);
       if (!courseCode) throw new Error('AI 没有识别到明确课号（例如 MATH 217），请在文字中补充课号后重试。');
-      setSyllabusResult({ ...data, courseName: courseCode });
+      setSyllabusResult({ ...normalizedResult, courseName: courseCode });
       setIncludeTbdAssignments(false);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'AI 分析失败，请稍后重试。';
@@ -459,6 +489,20 @@ export default function Page() {
     const finalCourseName = existingCourse?.name ?? courseName;
     const finalGrading = existingCourse?.grading.length ? existingCourse.grading : importedGrading;
     const taskCategoryNames = new Set(finalGrading.filter((category) => category.kind === 'task').map((category) => category.name.toLocaleLowerCase()));
+    const seriesToImport: ExpectedSeries[] = syllabusResult.expectedSeries
+      .filter((series) => series.title.trim())
+      .map((series) => ({
+        id: expectedSeriesExternalId(finalCourseName, series.title, series.category),
+        course: finalCourseName,
+        title: series.title.trim(),
+        gradeCategory: taskCategoryNames.has(series.category.toLocaleLowerCase()) ? series.category : '',
+        count: series.count,
+        notes: series.notes.trim(),
+        recurrence: series.recurrence,
+        courseStartDate: syllabusResult.courseStartDate,
+        courseEndDate: syllabusResult.courseEndDate,
+        source: 'syllabus',
+      }));
 
     setCourses((current) => {
       const existingIndex = current.findIndex((course) => course.name.toLocaleLowerCase() === courseName.toLocaleLowerCase());
@@ -467,12 +511,23 @@ export default function Page() {
       return current.map((course, index) => index === existingIndex ? { ...course, grading: importedGrading, source: 'syllabus' } : course);
     });
 
+    setExpectedSeries((current) => {
+      const next = [...current];
+      for (const series of seriesToImport) {
+        const existingIndex = next.findIndex((item) => item.id === series.id);
+        if (existingIndex === -1) next.push(series);
+        else next[existingIndex] = series;
+      }
+      return next;
+    });
+
     const assignmentsToImport = syllabusResult.assignments.filter((assignment) => assignment.title.trim() && (assignment.dueAt || includeTbdAssignments));
     setTasks((current) => {
       const next = [...current];
       for (const [index, assignment] of assignmentsToImport.entries()) {
         const externalId = syllabusExternalId(finalCourseName, assignment.title, assignment.dueAt);
         const gradeCategory = taskCategoryNames.has(assignment.category.toLocaleLowerCase()) ? assignment.category : '';
+        const linkedSeries = seriesToImport.find((series) => assignment.title.trim().toLocaleLowerCase().startsWith(series.title.toLocaleLowerCase()));
         const existingIndex = next.findIndex((task) => task.externalId === externalId);
         const importedTask: Task = {
           id: existingIndex === -1 ? Date.now() + index : next[existingIndex].id,
@@ -485,15 +540,41 @@ export default function Page() {
           score: existingIndex === -1 ? null : next[existingIndex].score,
           source: 'syllabus',
           externalId,
+          expectedSeriesId: linkedSeries?.id ?? null,
         };
         if (existingIndex === -1) next.push(importedTask);
         else next[existingIndex] = { ...importedTask, notes: next[existingIndex].notes || importedTask.notes };
+      }
+      for (const series of seriesToImport) {
+        const sourceSeries = syllabusResult.expectedSeries.find((item) => expectedSeriesExternalId(finalCourseName, item.title, item.category) === series.id);
+        if (!sourceSeries) continue;
+        for (const generated of generateExpectedAssignments(sourceSeries, syllabusResult.courseStartDate, syllabusResult.courseEndDate)) {
+          const existingIndex = next.findIndex((task) => task.course === finalCourseName && task.title.toLocaleLowerCase() === generated.title.toLocaleLowerCase());
+          if (existingIndex !== -1) {
+            next[existingIndex] = { ...next[existingIndex], expectedSeriesId: series.id };
+            continue;
+          }
+          next.push({
+            id: Date.now() + next.length,
+            title: generated.title,
+            course: finalCourseName,
+            due: generated.dueAt,
+            done: false,
+            notes: series.notes,
+            gradeCategory: series.gradeCategory,
+            score: null,
+            source: 'syllabus',
+            externalId: `syllabus-series-item:${series.id}:${generated.title}`.toLocaleLowerCase().replace(/\s+/g, '-'),
+            expectedSeriesId: series.id,
+          });
+        }
       }
       return next;
     });
     setFilter(finalCourseName);
     const gradingNote = syllabusResult.grading.length > 0 && !gradingIsValid ? '评分比例不完整，课程已保留为空白评分结构，请稍后在课程设置中确认。' : '';
-    setSyllabusMessage(`已导入 ${finalCourseName} 和 ${assignmentsToImport.length} 项日程。${gradingNote}`);
+    const generatedCount = syllabusResult.expectedSeries.reduce((sum, series) => sum + generateExpectedAssignments(series, syllabusResult.courseStartDate, syllabusResult.courseEndDate).length, 0);
+    setSyllabusMessage(`已导入 ${finalCourseName}、${seriesToImport.length} 个预期系列和 ${assignmentsToImport.length + generatedCount} 项日程。${gradingNote}`);
     setSyllabusResult(null);
   }
 
@@ -511,14 +592,47 @@ export default function Page() {
     setDraft((current) => {
       const courseName = courses.some((course) => course.name === current.course) ? current.course : courses[0].name;
       const categories = taskCategoriesFor(courses.find((course) => course.name === courseName));
-      return { ...current, course: courseName, gradeCategory: categories.some((item) => item.name === current.gradeCategory) ? current.gradeCategory : (categories[0]?.name ?? '') };
+      const seriesIsValid = expectedSeries.some((series) => series.id === current.expectedSeriesId && series.course === courseName);
+      return { ...current, course: courseName, gradeCategory: categories.some((item) => item.name === current.gradeCategory) ? current.gradeCategory : (categories[0]?.name ?? ''), expectedSeriesId: seriesIsValid ? current.expectedSeriesId : '' };
     });
     setFormOpen(true);
   }
 
+  function nextExpectedSeriesTitle(series: ExpectedSeries) {
+    const usedNumbers = tasks
+      .filter((task) => task.expectedSeriesId === series.id)
+      .map((task) => Number(task.title.match(/(\d+)\s*$/)?.[1] ?? 0));
+    return `${series.title} ${Math.max(0, ...usedNumbers) + 1}`;
+  }
+
+  function openExpectedSeriesTaskForm(series: ExpectedSeries) {
+    setDraft({
+      title: nextExpectedSeriesTitle(series),
+      course: series.course,
+      due: '',
+      notes: series.notes,
+      gradeCategory: series.gradeCategory,
+      score: '',
+      expectedSeriesId: series.id,
+    });
+    setFormOpen(true);
+  }
+
+  function changeDraftSeries(seriesId: string) {
+    const series = expectedSeries.find((item) => item.id === seriesId);
+    setDraft({
+      ...draft,
+      expectedSeriesId: seriesId,
+      title: series ? nextExpectedSeriesTitle(series) : draft.title,
+      gradeCategory: series?.gradeCategory || draft.gradeCategory,
+      notes: series?.notes || draft.notes,
+      due: series ? '' : draft.due,
+    });
+  }
+
   function changeDraftCourse(courseName: string) {
     const categories = taskCategoriesFor(courses.find((course) => course.name === courseName));
-    setDraft({ ...draft, course: courseName, gradeCategory: categories[0]?.name ?? '' });
+    setDraft({ ...draft, course: courseName, gradeCategory: categories[0]?.name ?? '', expectedSeriesId: '' });
   }
 
   function openCourseForm() {
@@ -552,8 +666,8 @@ export default function Page() {
     if (!draft.title.trim() || !draft.course) return;
     const course = courses.find((item) => item.name === draft.course);
     if (taskCategoriesFor(course).length && !draft.gradeCategory) return;
-    setTasks([{ ...draft, title: draft.title.trim(), notes: draft.notes.trim(), score: draft.score === '' ? null : Number(draft.score), id: Date.now(), done: false, source: 'manual', externalId: null }, ...tasks]);
-    setDraft({ title: '', course: draft.course, due: `${new Date().toISOString().slice(0, 10)}T23:59`, notes: '', gradeCategory: draft.gradeCategory, score: '' });
+    setTasks([{ ...draft, title: draft.title.trim(), due: draft.due || null, notes: draft.notes.trim(), score: draft.score === '' ? null : Number(draft.score), expectedSeriesId: draft.expectedSeriesId || null, id: Date.now(), done: false, source: 'manual', externalId: null }, ...tasks]);
+    setDraft({ title: '', course: draft.course, due: `${new Date().toISOString().slice(0, 10)}T23:59`, notes: '', gradeCategory: draft.gradeCategory, score: '', expectedSeriesId: '' });
     setFormOpen(false);
   }
 
@@ -585,6 +699,11 @@ export default function Page() {
         : task.course === editingCourse ? { ...task, course: name } : task));
       setWeeklyCourses(weeklyCourses.map((item) => item.course === editingCourse ? { ...item, course: name } : item));
       setWeeklyAssignments(weeklyAssignments.map((item) => item.course === editingCourse ? { ...item, course: name } : item));
+      setExpectedSeries(expectedSeries.map((series) => {
+        if (series.course !== editingCourse) return series;
+        const updatedCategory = series.gradeCategory ? categoryUpdates.get(series.gradeCategory) : undefined;
+        return { ...series, course: name, gradeCategory: updatedCategory?.kind === 'task' ? updatedCategory.name : (series.gradeCategory && !updatedCategory ? series.gradeCategory : '') };
+      }));
       setCourses(courses.map((course) => course.name === editingCourse ? { ...course, name, grading } : course));
       setFilter((current) => current === editingCourse ? name : current);
       setDraft((current) => ({ ...current, course: current.course === editingCourse ? name : current.course }));
@@ -611,9 +730,17 @@ export default function Page() {
     if (!window.confirm(message)) return;
     const remaining = courses.filter((item) => item.name !== course);
     if (affected) setTasks(tasks.filter((task) => task.course !== course));
+    setExpectedSeries(expectedSeries.filter((series) => series.course !== course));
     setCourses(remaining);
     setFilter('全部');
     setDraft((current) => ({ ...current, course: current.course === course ? (remaining[0]?.name ?? '') : current.course }));
+  }
+
+  function deleteExpectedSeries(series: ExpectedSeries) {
+    const linkedCount = tasks.filter((task) => task.expectedSeriesId === series.id).length;
+    if (!window.confirm(`删除“Expected ${series.title}”系列吗？已有的 ${linkedCount} 项作业会保留，但不再属于该系列。`)) return;
+    setExpectedSeries(expectedSeries.filter((item) => item.id !== series.id));
+    setTasks(tasks.map((task) => task.expectedSeriesId === series.id ? { ...task, expectedSeriesId: null } : task));
   }
 
   function saveSelectedTaskGrade() {
@@ -747,6 +874,11 @@ export default function Page() {
   const currentCourseGrade = gradedWeight
     ? categoryStats.reduce((sum, item) => sum + (item.average ?? 0) * item.weight, 0) / gradedWeight
     : null;
+  const visibleExpectedSeries = expectedSeries.filter((series) => {
+    const courseMatches = filter === '全部' || filter === '待完成' || series.course === filter;
+    const categoryMatches = categoryFilter === '全部类别' || series.gradeCategory === categoryFilter;
+    return courseMatches && categoryMatches;
+  });
   const selectedTaskCourse = selectedTask ? courses.find((course) => course.name === selectedTask.course) : undefined;
   const weekDays = [{ label: '周一', value: 1 }, { label: '周二', value: 2 }, { label: '周三', value: 3 }, { label: '周四', value: 4 }, { label: '周五', value: 5 }, { label: '周六', value: 6 }, { label: '周日', value: 0 }];
   const calendarItems = calendarMode === 'course' ? weeklyCourses : weeklyAssignments;
@@ -762,6 +894,8 @@ export default function Page() {
   const todayLabel = new Intl.DateTimeFormat('zh-CN', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' }).format(new Date());
   const syllabusTbdCount = syllabusResult?.assignments.filter((assignment) => !assignment.dueAt).length ?? 0;
   const syllabusDatedCount = (syllabusResult?.assignments.length ?? 0) - syllabusTbdCount;
+  const syllabusGeneratedCount = syllabusResult?.expectedSeries.reduce((sum, series) => sum + generateExpectedAssignments(series, syllabusResult.courseStartDate, syllabusResult.courseEndDate).length, 0) ?? 0;
+  const syllabusGeneratedDatedCount = syllabusResult?.expectedSeries.reduce((sum, series) => sum + generateExpectedAssignments(series, syllabusResult.courseStartDate, syllabusResult.courseEndDate).filter((assignment) => assignment.dueAt).length, 0) ?? 0;
 
   if (!supabaseConfigured) return <main className="auth-shell">
     <section className="auth-card setup-card">
@@ -820,6 +954,10 @@ export default function Page() {
       <div className="list"><div className="list-head"><div><p className="eyebrow">作业清单</p><h2>{filter}</h2></div><span>{shown.length} 项</span></div>
       <div className="category-filters"><button className={categoryFilter === '全部类别' ? 'selected' : ''} onClick={() => setCategoryFilter('全部类别')}>全部类别</button>{categoryFilters.map((category) => <button key={category} className={categoryFilter === category ? 'selected' : ''} onClick={() => setCategoryFilter(category)}>{category}</button>)}</div>
       {selectedCourse && selectedCourse.grading.length > 0 && <section className="course-grade-panel"><div className="course-grade-total"><span>当前课程成绩</span><strong>{currentCourseGrade === null ? '—' : `${currentCourseGrade.toFixed(1)}%`}</strong><small>按已有成绩计算</small></div><div className="category-averages">{categoryStats.map((category) => <div key={category.name}><span>{category.name}<small>{category.kind === 'exam' ? '考试' : '任务'} · {category.weight}% · {category.gradedCount} 项已评分</small></span>{category.kind === 'exam' ? <div className="exam-score"><input aria-label={`${category.name} 考试成绩`} type="number" min="0" max="100" step="0.1" value={category.score ?? ''} onChange={(event) => setExamScore(selectedCourse.name, category.name, event.target.value)} placeholder="输入成绩" /><span>%</span></div> : <strong>{category.average === null ? '—' : `${category.average.toFixed(1)}%`}</strong>}</div>)}</div></section>}
+      {visibleExpectedSeries.length > 0 && <section className="expected-series-panel"><div className="expected-series-heading"><div><p className="eyebrow">Expected</p><h3>预期作业系列</h3></div><span>{visibleExpectedSeries.length} 组</span></div><div className="expected-series-list">{visibleExpectedSeries.map((series) => {
+        const linkedTasks = tasks.filter((task) => task.expectedSeriesId === series.id);
+        return <article key={series.id}><div className="expected-series-copy"><strong>Expected {series.title}</strong><small>{series.course}{series.gradeCategory ? ` · ${series.gradeCategory}` : ''} · 已创建 {linkedTasks.length}{series.count ? ` / ${series.count}` : ''} 项</small><p>{formatRecurrenceRule(series, series.courseStartDate, series.courseEndDate)}</p></div><div className="expected-series-actions"><button type="button" className="secondary" onClick={() => openExpectedSeriesTaskForm(series)}>＋ 添加下一项</button><button type="button" className="plain icon-only" aria-label={`删除 Expected ${series.title}`} title="删除系列" onClick={() => deleteExpectedSeries(series)}>×</button></div></article>;
+      })}</div></section>}
       {shown.length ? shown.map((task) => <article className={`task ${task.done ? 'done' : ''}`} key={task.id}>
         <button className="check" aria-label={`标记 ${task.title} 完成`} onClick={() => setTasks(tasks.map((item) => item.id === task.id ? { ...item, done: !item.done } : item))}>{task.done && '✓'}</button>
         <button className="task-open" onClick={() => setSelectedTask(task)}><span className="task-summary"><h3>{task.title}</h3><p>{task.course}</p></span><time className="task-due">{formatDate(task.due)}</time></button>
@@ -830,7 +968,7 @@ export default function Page() {
     {syllabusImportOpen && <div className="modal-backdrop" onMouseDown={() => !syllabusBusy && setSyllabusImportOpen(false)}><section className="modal syllabus-import-modal" role="dialog" aria-modal="true" aria-labelledby="syllabus-import-title" onPaste={(event) => { const image = Array.from(event.clipboardData.files).find((file) => file.type.startsWith('image/')); if (image) void chooseSyllabusImage(image); }} onMouseDown={(event) => event.stopPropagation()}>
       <div className="syllabus-import-heading"><span className="ai-mark" aria-hidden="true">✦</span><div><p className="eyebrow">Smart import</p><h2 id="syllabus-import-title">从 syllabus 导入</h2></div></div>
       {!syllabusResult ? <>
-        <p className="modal-copy">粘贴 syllabus 文字，或上传/直接粘贴一张截图。AI 会先整理课程、评分结构和作业，确认后才会写入。</p>
+        <p className="modal-copy">粘贴 syllabus 文字，或上传/直接粘贴一张截图。AI 会先整理课程、评分结构、明确作业和重复规则，确认后才会写入。</p>
         <label>Syllabus 文字<textarea rows={7} value={syllabusText} onChange={(event) => { setSyllabusText(event.target.value); setSyllabusMessage(''); }} placeholder="在这里粘贴课程大纲、评分说明和日程……" /></label>
         <div className={`syllabus-drop ${syllabusImage ? 'has-image' : ''}`}>
           {syllabusImage ? <><img src={syllabusImage.dataUrl} alt="待分析的 syllabus 截图" /><div><strong>{syllabusImage.name}</strong><button type="button" onClick={() => setSyllabusImage(null)}>移除截图</button></div></> : <><span aria-hidden="true">▧</span><div><strong>添加 syllabus 截图</strong><small>可在此窗口按 Ctrl+V，或选择 PNG、JPG、WebP</small></div></>}
@@ -838,9 +976,10 @@ export default function Page() {
         </div>
         <small className="privacy-note">点击分析后，输入内容会经你的 Supabase 后端发送给 OpenAI，仅用于本次结构化识别。</small>
       </> : <div className="syllabus-review">
-        <div className="syllabus-review-summary"><div><small>识别到课程</small><h3>{syllabusResult.courseName}</h3></div><span>{syllabusDatedCount} 项有时间</span></div>
+        <div className="syllabus-review-summary"><div><small>识别到课程</small><h3>{syllabusResult.courseName}</h3></div><span>{syllabusDatedCount + syllabusGeneratedDatedCount} 项有日期</span></div>
         <section><div className="review-section-head"><strong>评分结构</strong><small>{syllabusResult.grading.length} 类</small></div>{syllabusResult.grading.length ? <div className="review-chips">{syllabusResult.grading.map((category) => <span key={`${category.name}-${category.kind}`}>{category.name}<small>{category.kind === 'exam' ? '考试' : '任务'} · {category.weight === null ? '比例待定' : `${category.weight}%`}</small></span>)}</div> : <p className="review-empty">没有识别到评分结构，可导入后手动补充。</p>}</section>
         <section><div className="review-section-head"><strong>作业与考试</strong><small>{syllabusResult.assignments.length} 项</small></div><div className="review-assignment-list">{syllabusResult.assignments.map((assignment, index) => <article key={`${assignment.title}-${index}`}><div><strong>{assignment.title}</strong>{assignment.category && <small>{assignment.category}</small>}</div><time className={!assignment.dueAt ? 'tbd' : ''}>{formatDate(assignment.dueAt)}</time></article>)}</div></section>
+        {syllabusResult.expectedSeries.length > 0 && <section><div className="review-section-head"><strong>预期作业系列</strong><small>{syllabusResult.expectedSeries.length} 组 · 将创建 {syllabusGeneratedCount} 项</small></div><div className="review-series-list">{syllabusResult.expectedSeries.map((series, index) => <article key={`${series.title}-${index}`}><div><strong>Expected {series.title}</strong><small>{series.category || '课程任务'}{series.count ? ` · 预计 ${series.count} 项` : ''}</small></div><p>{formatRecurrenceRule(series, syllabusResult.courseStartDate, syllabusResult.courseEndDate)}</p></article>)}</div></section>}
         {syllabusTbdCount > 0 && <label className="tbd-choice"><input type="checkbox" checked={includeTbdAssignments} onChange={(event) => setIncludeTbdAssignments(event.target.checked)} /><span><strong>同时添加 {syllabusTbdCount} 项时间待定的作业</strong><small>它们会排在有截止时间的项目之后，之后可以手动补充日期。</small></span></label>}
         {syllabusResult.warnings.length > 0 && <details className="syllabus-warnings"><summary>{syllabusResult.warnings.length} 条需要确认的信息</summary><ul>{syllabusResult.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul></details>}
       </div>}
@@ -861,7 +1000,8 @@ export default function Page() {
       <div><p className="eyebrow">新的截止日期</p><h2>添加作业</h2></div>
       <label>作业名称<input autoFocus required value={draft.title} onChange={(event) => setDraft({ ...draft, title: event.target.value })} placeholder="例如：Group Assignment" /></label>
       <div className="row"><label>课程<select required value={draft.course} onChange={(event) => changeDraftCourse(event.target.value)}>{courses.map((course) => <option key={course.name}>{course.name}</option>)}</select></label><label>任务类别<select required={Boolean(taskCategoriesFor(courses.find((course) => course.name === draft.course)).length)} disabled={!taskCategoriesFor(courses.find((course) => course.name === draft.course)).length} value={draft.gradeCategory} onChange={(event) => setDraft({ ...draft, gradeCategory: event.target.value })}>{taskCategoriesFor(courses.find((course) => course.name === draft.course)).length ? taskCategoriesFor(courses.find((course) => course.name === draft.course)).map((category) => <option key={category.name}>{category.name}</option>) : <option value="">没有任务类别</option>}</select></label></div>
-      <label>截止日期与时间<input type="datetime-local" required value={draft.due} onChange={(event) => setDraft({ ...draft, due: event.target.value })} /></label>
+      {expectedSeries.some((series) => series.course === draft.course) && <label>预期作业系列（可选）<select value={draft.expectedSeriesId} onChange={(event) => changeDraftSeries(event.target.value)}><option value="">不属于预期系列</option>{expectedSeries.filter((series) => series.course === draft.course).map((series) => <option key={series.id} value={series.id}>Expected {series.title}</option>)}</select></label>}
+      <label>截止日期与时间{draft.expectedSeriesId ? '（可稍后填写）' : ''}<input type="datetime-local" required={!draft.expectedSeriesId} value={draft.due} onChange={(event) => setDraft({ ...draft, due: event.target.value })} /></label>
       <label>成绩（可稍后填写）<div className="score-input"><input type="number" min="0" max="100" step="0.01" value={draft.score} onChange={(event) => setDraft({ ...draft, score: event.target.value })} placeholder="例如：92" /><span>%</span></div></label>
       <label>备注<textarea rows={5} value={draft.notes} onChange={(event) => setDraft({ ...draft, notes: event.target.value })} placeholder="补充要求、提交方式、参考资料或需要记住的事项……" /></label>
       <div className="actions"><button type="button" className="plain" onClick={() => setFormOpen(false)}>取消</button><button className="add">保存作业</button></div>
@@ -911,6 +1051,6 @@ export default function Page() {
       <div className="actions"><button type="button" className="plain" onClick={closeCourseForm}>完成</button></div>
     </form></div>}
 
-    {selectedTask && <div className="modal-backdrop" onMouseDown={() => setSelectedTask(null)}><section className="modal detail-modal" onMouseDown={(event) => event.stopPropagation()}><div className="detail-top"><div><p className="eyebrow">作业详情</p><h2>{selectedTask.title}</h2></div><button className="close" aria-label="关闭详情" onClick={() => setSelectedTask(null)}>×</button></div><div className="detail-meta"><span>{selectedTask.course}</span>{selectedTask.gradeCategory && <span>{selectedTask.gradeCategory}</span>}<span>{formatDate(selectedTask.due)}</span></div><div className="assignment-grade-editor"><p>作业信息</p><label>截止日期与时间（留空为待定）<input type="datetime-local" value={selectedTask.due ?? ''} onChange={(event) => setSelectedTask({ ...selectedTask, due: event.target.value || null })} /></label><div className="row"><label>任务类别<select disabled={!taskCategoriesFor(selectedTaskCourse).length} value={selectedTask.gradeCategory} onChange={(event) => setSelectedTask({ ...selectedTask, gradeCategory: event.target.value })}>{taskCategoriesFor(selectedTaskCourse).length ? taskCategoriesFor(selectedTaskCourse).map((category) => <option key={category.name}>{category.name}</option>) : <option value="">没有任务类别</option>}</select></label><label>成绩<div className="score-input"><input type="number" min="0" max="100" step="0.01" value={selectedTask.score ?? ''} onChange={(event) => setSelectedTask({ ...selectedTask, score: event.target.value === '' ? null : Number(event.target.value) })} placeholder="尚未评分" /><span>%</span></div></label></div><button className="secondary save-grade" onClick={saveSelectedTaskGrade}>保存更改</button></div><div className="notes-block"><p>备注</p><div>{selectedTask.notes || '这项作业还没有备注。'}</div></div><div className="actions"><button className="add" onClick={() => setSelectedTask(null)}>完成查看</button></div></section></div>}
+    {selectedTask && <div className="modal-backdrop" onMouseDown={() => setSelectedTask(null)}><section className="modal detail-modal" onMouseDown={(event) => event.stopPropagation()}><div className="detail-top"><div><p className="eyebrow">作业详情</p><h2>{selectedTask.title}</h2></div><button className="close" aria-label="关闭详情" onClick={() => setSelectedTask(null)}>×</button></div><div className="detail-meta"><span>{selectedTask.course}</span>{selectedTask.gradeCategory && <span>{selectedTask.gradeCategory}</span>}<span>{formatDate(selectedTask.due)}</span></div><div className="assignment-grade-editor"><p>作业信息</p><div className="row"><label>截止日期（留空为待定）<input type="date" value={dueDatePart(selectedTask.due)} onChange={(event) => setSelectedTask({ ...selectedTask, due: combineDueParts(event.target.value, dueTimePart(selectedTask.due)) })} /></label><label>截止时间（可选）<input type="time" disabled={!dueDatePart(selectedTask.due)} value={dueTimePart(selectedTask.due)} onChange={(event) => setSelectedTask({ ...selectedTask, due: combineDueParts(dueDatePart(selectedTask.due), event.target.value) })} /></label></div><div className="row"><label>任务类别<select disabled={!taskCategoriesFor(selectedTaskCourse).length} value={selectedTask.gradeCategory} onChange={(event) => setSelectedTask({ ...selectedTask, gradeCategory: event.target.value })}>{taskCategoriesFor(selectedTaskCourse).length ? taskCategoriesFor(selectedTaskCourse).map((category) => <option key={category.name}>{category.name}</option>) : <option value="">没有任务类别</option>}</select></label><label>成绩<div className="score-input"><input type="number" min="0" max="100" step="0.01" value={selectedTask.score ?? ''} onChange={(event) => setSelectedTask({ ...selectedTask, score: event.target.value === '' ? null : Number(event.target.value) })} placeholder="尚未评分" /><span>%</span></div></label></div><button className="secondary save-grade" onClick={saveSelectedTaskGrade}>保存更改</button></div><div className="notes-block"><p>备注</p><div>{selectedTask.notes || '这项作业还没有备注。'}</div></div><div className="actions"><button className="add" onClick={() => setSelectedTask(null)}>完成查看</button></div></section></div>}
   </main>;
 }
